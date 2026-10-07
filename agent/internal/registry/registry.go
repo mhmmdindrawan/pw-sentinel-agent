@@ -39,6 +39,13 @@ type Registry struct {
 	mu      sync.Mutex
 	entries map[string]Entry
 	maxNum  map[string]int // per code, highest number in use
+
+	// The seed defines which code prefix each category uses (SYSTEM ->
+	// SYS, NETWORK -> NET, ...). Unknown events are allocated under the
+	// same prefix so one category never ends up with two numbering
+	// sequences (SYS-001 vs SYSTEM-001).
+	catToCode map[string]string
+	codeToCat map[string]string
 }
 
 func Load(path string) (*Registry, error) {
@@ -53,8 +60,10 @@ func Load(path string) (*Registry, error) {
 	}
 
 	r := &Registry{
-		entries: make(map[string]Entry),
-		maxNum:  make(map[string]int),
+		entries:   make(map[string]Entry),
+		maxNum:    make(map[string]int),
+		catToCode: make(map[string]string),
+		codeToCat: make(map[string]string),
 	}
 
 	for name, e := range sf.Events {
@@ -69,9 +78,32 @@ func Load(path string) (*Registry, error) {
 			entry.Severity = "MEDIUM"
 		}
 		r.register(entry)
+		if prev, ok := r.catToCode[entry.Category]; ok && prev != entry.Code {
+			return nil, fmt.Errorf("registry %s: category %s uses two code prefixes (%s and %s)", path, entry.Category, prev, entry.Code)
+		}
+		r.catToCode[entry.Category] = entry.Code
+		r.codeToCat[entry.Code] = entry.Category
 	}
 
 	return r, nil
+}
+
+// ResolveCategory maps a client-supplied category hint to a known
+// (category, code) pair. The hint may be either the category name
+// ("SYSTEM") or its code prefix ("SYS"), case-insensitive. ok is false
+// for anything the seed doesn't define, so callers can fall back instead
+// of minting an arbitrary new prefix from client input.
+func (r *Registry) ResolveCategory(hint string) (category, code string, ok bool) {
+	hint = strings.ToUpper(strings.TrimSpace(hint))
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if code, ok := r.catToCode[hint]; ok {
+		return hint, code, true
+	}
+	if cat, ok := r.codeToCat[hint]; ok {
+		return cat, hint, true
+	}
+	return "", "", false
 }
 
 // Lookup returns the registered entry for an event name, if any.
@@ -104,6 +136,14 @@ func (r *Registry) register(e Entry) {
 func (r *Registry) Allocate(eventName, category, code, severity string) Entry {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// Two concurrent first-sight requests for the same event both miss
+	// Lookup; the second must get the first's number, not a fresh one
+	// (the store keeps only the first, so a fresh one would change the
+	// event's code after a restart).
+	if e, ok := r.entries[eventName]; ok {
+		return e
+	}
 
 	code = strings.ToUpper(code)
 	category = strings.ToUpper(category)

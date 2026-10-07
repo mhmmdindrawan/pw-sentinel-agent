@@ -111,11 +111,20 @@ func (s *Server) handlePostEvent(w http.ResponseWriter, r *http.Request) {
 
 	entry, known := s.reg.Lookup(in.Event)
 	if !known {
-		code := strings.ToUpper(strings.TrimSpace(in.Category))
-		if code == "" {
-			code = "APP"
+		// Use the seed's prefix for the category (SYSTEM -> SYS), and never
+		// mint a new prefix from client input: an unknown hint falls back
+		// to APP, keeping the original text in context for triage.
+		category, code, ok := s.reg.ResolveCategory(in.Category)
+		if !ok {
+			if hint := strings.TrimSpace(in.Category); hint != "" {
+				log.Printf("warning: unknown category %q for event %q; allocating under APP", hint, in.Event)
+				if in.Context == nil {
+					in.Context = map[string]any{}
+				}
+				in.Context["category_hint"] = hint
+			}
+			category, code = "APP", "APP"
 		}
-		category := code
 		entry = s.reg.Allocate(in.Event, category, code, in.Severity)
 		if err := s.db.SaveCustomRegistryEntry(entry); err != nil {
 			log.Printf("warning: failed to persist learned event %q: %v", in.Event, err)
