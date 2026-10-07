@@ -1,0 +1,13 @@
+{
+  "name": "parkways-sentinel-e2e",
+  "private": true,
+  "description": "End-to-end tests for the Sentinel dashboard (dev only; not part of releases)",
+  "scripts": {
+    "test": "playwright test",
+    "report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
+    "@playwright/test": "^1.63.0"
+  }
+}
