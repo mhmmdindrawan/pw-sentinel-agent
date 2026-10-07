@@ -141,3 +141,13 @@ events:
     code: SYS
     number: 1
     severity: MEDIUM
+
+  # --- Reserved range: numbers >= 900 are for events the Sentinel SDK
+  # itself emits. Auto-allocation never counts them, so adding one here
+  # can't collide with a number an agent already handed out on its own.
+
+  SENTINEL_GAP:       # SDK was cut off from the agent; sent on reconnect
+    category: SYSTEM
+    code: SYS
+    number: 901
+    severity: INFO    # the SDK raises it to MEDIUM when events were lost

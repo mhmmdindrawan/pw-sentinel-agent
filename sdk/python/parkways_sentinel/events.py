@@ -37,3 +37,21 @@ HTTP_CLIENT_ERROR = "HTTP_CLIENT_ERROR"
 DATABASE_ERROR = "DATABASE_ERROR"
 DEVICE_ERROR = "DEVICE_ERROR"
 SYSTEM_ERROR = "SYSTEM_ERROR"
+
+# Emitted by the SDK itself (reserved range SYS-9xx in registry.yaml).
+SENTINEL_GAP = "SENTINEL_GAP"
+
+# Events the agent's registry rates HIGH or CRITICAL. When the SDK's
+# outbox is full it discards other events first. Keep in sync with
+# agent/registry.yaml.
+HIGH_PRIORITY = frozenset([
+    APP_CRASHED,
+    PAYMENT_TIMEOUT,
+    READER_DISCONNECTED,
+    READER_NOT_READY,
+    MQTT_CONNECT_FAILED,
+    NETWORK_DISCONNECTED,
+    HTTP_SERVER_ERROR,
+    HTTP_TIMEOUT,
+    DATABASE_ERROR,
+])

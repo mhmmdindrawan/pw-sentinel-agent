@@ -122,9 +122,14 @@ func (r *Registry) Register(e Entry) {
 	r.register(e)
 }
 
+// ReservedFrom starts the number range kept for events the SDK emits
+// itself (registry.yaml). Allocation ignores it, so learned events keep
+// counting up from the regular range (SYS-002, not SYS-902).
+const ReservedFrom = 900
+
 func (r *Registry) register(e Entry) {
 	r.entries[e.EventName] = e
-	if e.Number > r.maxNum[e.Code] {
+	if e.Number < ReservedFrom && e.Number > r.maxNum[e.Code] {
 		r.maxNum[e.Code] = e.Number
 	}
 }
