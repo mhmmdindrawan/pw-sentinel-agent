@@ -5,28 +5,35 @@ payment systems — designed to run **independently of the main payment
 server**. Kiosks keep reporting their own errors even if the network, the
 central server, or the internet is down.
 
-**Deployment model:** one Sentinel Agent instance runs on a PC on the same
-LAN as the kiosks (or reachable remotely over a VPN like Tailscale) and
-serves **many kiosks/gates at once** — a mix of Lubuntu ARM, Windows, and
-Linux x86 machines is expected. Each kiosk authenticates with a per-device
+**Deployment model (MVP):** one central Sentinel Agent runs on a Linux VPS
+and serves **every kiosk/gate** — a mix of Lubuntu ARM, Windows, and Linux
+x86 machines — over Tailscale. NOC and support use its built-in web
+dashboard and get Telegram alerts. Kiosks buffer events locally while the
+link is down, so an outage delays reports instead of losing them. Each kiosk authenticates with a per-device
 bearer token; the agent resolves location/gate per event from that
 authenticated identity, not from its own local config. Full wire protocol:
 [`docs/protocol-v1.md`](docs/protocol-v1.md).
 
-This repo currently contains the first slice of the system:
+What's in this repo:
 
-- **`agent/`** — the Sentinel Agent: a small Go service. It receives events
-  over an authenticated HTTP API, resolves each event's kiosk identity,
-  normalizes it into a standard error code, and stores it in a local
-  SQLite database. No dependency on the payment server or its database.
-- **`sdk/python/`** — a zero-dependency, Python-3.6.9-compatible client
-  (`parkways_sentinel`) that a gate-out application imports to report
-  events to the agent, fire-and-forget, without ever blocking or crashing
-  the host app.
+- **`agent/`** — the Sentinel Agent: one Go binary (no CGO; Linux x86/ARM,
+  Windows). It receives events and heartbeats over an authenticated HTTP
+  API, normalizes events into standard error codes, stores them in its own
+  SQLite database, derives each gate's status (ONLINE/STALE/DOWN, red/
+  yellow/green), serves the NOC dashboard, and sends Telegram alerts. No
+  dependency on the payment server or its database.
+- **`sdk/python/`** — a zero-dependency, Python-3.6-compatible client
+  (`parkways_sentinel`) the gate-out application imports. It never blocks
+  or crashes the host app; it keeps events in an outbox until the agent
+  confirms them, backs off while the agent is unreachable, and coalesces
+  repeats of the same problem.
+- **`deploy/`** — systemd unit and a multi-target build script.
+- **`docs/`** — [wire protocol](docs/protocol-v1.md),
+  [VPS deployment runbook](docs/deploy-vps.md),
+  [kiosk integration guide](docs/integrasi-kiosk.md).
 
-Not built yet (future components, out of scope for this slice):
-heartbeat/device inventory, aggregator/incident correlation, AI analyzer,
-dashboard, central/hybrid sync across locations.
+Not built yet: incident correlation, AI analyzer and chat, per-site agents
+syncing to a central one.
 
 ## Error code convention
 
@@ -53,97 +60,87 @@ same event always gets the same code, even across restarts.
 ## Running the agent
 
 Requires Go 1.25+ (toolchain auto-downloads via `go build` if needed).
+Production setup on a VPS is in [`docs/deploy-vps.md`](docs/deploy-vps.md).
 
 ```bash
 cd agent
-cp config.example.yaml config.yaml
-cp devices.example.yaml devices.yaml
-# edit devices.yaml: add one entry per kiosk (device_id, location, gate, pos, token)
+cp config.example.yaml config.yaml          # set listen_addr, session_secret, public_url
 go build -o sentinel-agent ./cmd/sentinel-agent
+
+./sentinel-agent device add -id STI-G03-POS01 -location STI -gate G03 -pos POS01
+#   → prints SENTINEL_DEVICE_ID / SENTINEL_TOKEN for that kiosk's config
+./sentinel-agent user add -name noc -role viewer   # password on stdin
 ./sentinel-agent -config config.yaml
 ```
 
-`listen_addr` defaults to `0.0.0.0:8787` — it must be reachable from every
-kiosk this agent monitors. Firewall it to the LAN/VPN segment the kiosks
-live on; do not expose it to the public internet (Tahap 1's bearer tokens
-are static, non-rotating shared secrets, not short-lived credentials).
+Then open `http://<listen_addr>/` and log in. Release binaries for every
+target: `deploy/build.sh` → `dist/`.
+
+`listen_addr` must be reachable from every kiosk, and nothing else: bind
+it to the Tailscale address, never to the public internet (device tokens
+are static shared secrets and the dashboard relies on Tailscale for
+transport encryption).
+
+Other commands: `device list`, `user list`, `alert test` (sends a test
+Telegram message to every configured route), `version`.
 
 ### HTTP API
 
-- `POST /v1/events` — report an event, requires `Authorization: Bearer <token>` (see [`docs/protocol-v1.md`](docs/protocol-v1.md))
-- `GET /v1/events?limit=100` — most recent stored events
-- `GET /v1/summary?minutes=30` — counts per error code in the time window
-- `GET /v1/health` — liveness + configured device count
+Kiosks (device bearer token, write-only):
 
-Example:
+- `POST /v1/events` — report one event ([protocol](docs/protocol-v1.md))
+- `POST /v1/events/batch` — up to 100 events, per-item results
+- `POST /v1/heartbeat` — liveness, app/SDK version, outbox backlog
+
+Dashboard and scripts (login session cookie, or HTTP Basic with a
+`users.yaml` user; device tokens are rejected):
+
+- `GET /v1/fleet` — every device with status, colour, last seen, error counts
+- `GET /v1/devices/{device_id}` — one device, its 24h summary and hourly counts
+- `GET /v1/events` — filter by `device_id`, `location`, `gate`, `error_code`,
+  `event`, `severity` (minimum), `since`/`until`; page with `before_id`
+- `GET /v1/summary?minutes=30` — counts per error code (`location`, `device_id`)
+
+Public: `GET /v1/health`, and the dashboard page itself (`/`), which holds
+no data until you log in.
 
 ```bash
-curl -X POST http://127.0.0.1:8787/v1/events \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer REPLACE_ME_WITH_A_LONG_RANDOM_SECRET" \
-  -d '{
-        "device_id": "KIOSK-STI-G03",
-        "event_id": "b6d9e2b0-1c3a-4e9a-9b2e-2a6f6a1e0c11",
-        "occurred_at": "2026-09-26T19:40:21+08:00",
-        "event": "PAYMENT_TIMEOUT",
-        "message": "Payment API timeout",
-        "device": "PAYMENT",
-        "transaction_ref": "8629730810",
-        "retry_count": 3,
-        "duration_ms": 3200,
-        "app_version": "3.9.0"
-      }'
+curl -u noc "http://100.64.0.1:8787/v1/events?location=STI&severity=HIGH&limit=20"
 ```
 
-→ stored as `STI-G03-PAY-002` — location/gate come from `devices.yaml` via
-the authenticated `device_id`, not the request body's location/gate (there
-is none) or a single agent-wide config.
-
 ## Using the Python SDK
+
+Full kiosk integration guide (Indonesian): [`docs/integrasi-kiosk.md`](docs/integrasi-kiosk.md).
 
 ```python
 from parkways_sentinel import SentinelClient, events
 
 monitor = SentinelClient(
-    device_id="KIOSK-STI-G03",
-    base_url="http://192.168.1.50:8787",  # the LAN address of the Sentinel Agent PC
-    token="REPLACE_ME_WITH_A_LONG_RANDOM_SECRET",
+    device_id="STI-G03-POS01",
+    base_url="http://100.64.0.1:8787",           # the agent's Tailscale address
+    token="<SENTINEL_TOKEN from `device add`>",
     app_version="3.9.0",
+    outbox_path="/home/kiosk/.bssparking/sentinel_outbox.db",  # survive restarts/outages
 )
 
-# generic event
-monitor.error(
-    events.PAYMENT_TIMEOUT,
-    message="Payment API timeout",
-    device="PAYMENT",
-    transaction_ref="8629730810",
-    retry_count=3,
-    duration_ms=3200,
-)
+# in the app's main loop — drives the heartbeat; a hung loop shows as DOWN
+monitor.beat()
 
-# convenience wrapper for HTTP/API failures
-monitor.api_error(
-    endpoint="/cashless/gateoutcashless",
-    status_code=500,
-    duration_ms=2840,
-)
+monitor.error(events.READER_NOT_READY, device="READER01", message="no answer to status poll")
 
-# any app-specific event works too, even if not in registry.yaml yet
+# HTTP failures against the payment server
+monitor.api_error(endpoint="/cashless/gateoutcashless", status_code=None, duration_ms=30000)  # timeout
+
+# app-specific events work too; the agent assigns them a stable code
 monitor.error("BARRIER_STUCK", category="DEVICE", severity="HIGH",
-               message="Boom gate barrier did not respond")
+              message="Boom gate barrier did not respond")
 ```
 
-`device_id` must be a value that's stable across restarts for this
-physical kiosk (an MQTT device serial, `/etc/machine-id` on Linux, a
-registry `MachineGuid` on Windows, etc.) — obtaining it is the host
-application's responsibility, not the SDK's, since it's platform-specific.
-Every `event_id`/`occurred_at` needed for idempotency and dual-timestamping
-is generated by the SDK automatically.
-
-Every call is enqueued and sent from a background thread. If the agent is
-down or unreachable, the SDK silently drops the event and returns
-immediately — it will never raise an exception into, or slow down, your
-gate-out application.
+`device_id` must be stable across restarts for this physical kiosk — use
+the one `sentinel-agent device add` registered. Every call returns
+immediately; delivery happens on a background thread and never raises into
+the application. Report delivery problems to your own log with
+`on_send_error=lambda exc, payload: ...`.
 
 ## Why decoupled from the main server?
 
