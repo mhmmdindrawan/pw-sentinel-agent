@@ -1,29 +1,59 @@
 // Command sentinel-agent runs the error tracking service for one or more
-// gate/kiosk machines on the LAN. It is designed to keep running
-// independently of the main payment server: events are collected and
-// stored locally in SQLite even if the network or central systems are
-// unavailable.
+// gate/kiosk machines. It is designed to keep running independently of the
+// main payment server: events are collected and stored in its own SQLite
+// database even if the payment server or other central systems are down.
+//
+// Usage:
+//
+//	sentinel-agent [-config config.yaml]                  run the agent
+//	sentinel-agent device add -id ID -location L -gate G [-pos P]
+//	sentinel-agent device list
+//	sentinel-agent user add -name NAME -role viewer|admin  (password on stdin)
+//	sentinel-agent user list
+//	sentinel-agent version
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"parkways-sentinel/agent/internal/api"
+	"parkways-sentinel/agent/internal/auth"
 	"parkways-sentinel/agent/internal/config"
 	"parkways-sentinel/agent/internal/devices"
 	"parkways-sentinel/agent/internal/registry"
 	"parkways-sentinel/agent/internal/store"
 )
 
+// version is set at build time: go build -ldflags "-X main.version=v0.2.0"
+var version = "dev"
+
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "device":
+			os.Exit(runDevice(os.Args[2:]))
+		case "user":
+			os.Exit(runUser(os.Args[2:]))
+		case "version":
+			fmt.Println(version)
+			return
+		}
+	}
+	serve()
+}
+
+func serve() {
 	configPath := flag.String("config", "config.yaml", "path to agent config file")
 	flag.Parse()
 
@@ -40,6 +70,18 @@ func main() {
 	devReg, err := devices.Load(cfg.Server.DevicesPath)
 	if err != nil {
 		log.Fatalf("devices: %v", err)
+	}
+
+	users, err := auth.LoadUsers(cfg.Server.UsersPath)
+	if err != nil {
+		log.Fatalf("users: %v", err)
+	}
+	if users.Count() == 0 {
+		log.Printf("warning: no dashboard users in %s — nobody can log in; add one with `sentinel-agent user add`", cfg.Server.UsersPath)
+	}
+	sessions, generated := auth.NewSessions(cfg.Server.SessionSecret, 12*time.Hour)
+	if generated {
+		log.Printf("notice: server.session_secret is empty; using a random one (dashboard logins reset on restart)")
 	}
 
 	db, err := store.Open(cfg.Server.DBPath)
@@ -59,21 +101,27 @@ func main() {
 		log.Printf("loaded %d previously learned event(s) from local database", len(custom))
 	}
 
-	srv := api.New(cfg, reg, devReg, db)
+	srv := api.New(cfg, reg, devReg, db, users, sessions)
+	srv.Version = version
 	httpServer := &http.Server{
-		Addr:    cfg.Server.ListenAddr,
-		Handler: srv.Handler(),
+		Addr:              cfg.Server.ListenAddr,
+		Handler:           srv.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	go runRetention(ctx, db, cfg.Retention.Days)
+
 	go func() {
-		log.Printf("Parkways Sentinel Agent listening on %s (%d device(s) configured)", cfg.Server.ListenAddr, devReg.Count())
+		log.Printf("Parkways Sentinel Agent %s listening on %s (%d device(s), %d dashboard user(s))",
+			version, cfg.Server.ListenAddr, devReg.Count(), users.Count())
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("http server: %v", err)
 		}
 	}()
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	<-ctx.Done()
 
 	log.Println("shutting down...")
@@ -82,4 +130,114 @@ func main() {
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		log.Printf("shutdown error: %v", err)
 	}
+}
+
+// runRetention deletes events older than `days`, at startup and then daily.
+func runRetention(ctx context.Context, db *store.Store, days int) {
+	purge := func() {
+		n, err := db.PurgeEventsBefore(time.Now().AddDate(0, 0, -days))
+		if err != nil {
+			log.Printf("retention: %v", err)
+		} else if n > 0 {
+			log.Printf("retention: deleted %d event(s) older than %d days", n, days)
+		}
+	}
+	purge()
+	t := time.NewTicker(24 * time.Hour)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			purge()
+		}
+	}
+}
+
+func runDevice(args []string) int {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: sentinel-agent device add|list [flags]")
+		return 2
+	}
+	fs := flag.NewFlagSet("device "+args[0], flag.ContinueOnError)
+	path := fs.String("devices", "devices.yaml", "path to devices.yaml")
+	id := fs.String("id", "", "device id, e.g. STI-G01-POS01")
+	location := fs.String("location", "", "location code, e.g. STI")
+	gate := fs.String("gate", "", "gate code, e.g. G01")
+	pos := fs.String("pos", "", "optional POS label, e.g. POS01")
+	if err := fs.Parse(args[1:]); err != nil {
+		return 2
+	}
+
+	switch args[0] {
+	case "add":
+		token, err := devices.AddDevice(*path, *id, *location, *gate, *pos)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			return 1
+		}
+		fmt.Printf("added %s (%s %s) to %s\n", *id, strings.ToUpper(*location), strings.ToUpper(*gate), *path)
+		fmt.Printf("\nSENTINEL_DEVICE_ID=%s\nSENTINEL_TOKEN=%s\n\n", *id, token)
+		fmt.Println("Put these in the kiosk's config. The token is not shown again.")
+		fmt.Println("Restart the agent to load the new device.")
+		return 0
+	case "list":
+		reg, err := devices.Load(*path)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			return 1
+		}
+		for _, e := range reg.All() {
+			fmt.Printf("%-24s %-6s %-5s %s\n", e.DeviceID, e.Location, e.Gate, e.POS)
+		}
+		return 0
+	}
+	fmt.Fprintln(os.Stderr, "usage: sentinel-agent device add|list [flags]")
+	return 2
+}
+
+func runUser(args []string) int {
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: sentinel-agent user add|list [flags]")
+		return 2
+	}
+	fs := flag.NewFlagSet("user "+args[0], flag.ContinueOnError)
+	path := fs.String("users", "users.yaml", "path to users.yaml")
+	name := fs.String("name", "", "username")
+	role := fs.String("role", "viewer", "viewer or admin")
+	if err := fs.Parse(args[1:]); err != nil {
+		return 2
+	}
+
+	switch args[0] {
+	case "add":
+		// Password comes from stdin so it never appears in shell history
+		// or the process list.
+		fmt.Fprint(os.Stderr, "password (min 10 chars): ")
+		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+		if err != nil && line == "" {
+			fmt.Fprintln(os.Stderr, "\nerror: no password on stdin")
+			return 1
+		}
+		fmt.Fprintln(os.Stderr)
+		if err := auth.AddUser(*path, *name, auth.Role(strings.ToLower(*role)), strings.TrimRight(line, "\r\n")); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			return 1
+		}
+		fmt.Printf("saved user %s (%s) to %s — restart the agent to apply\n", *name, *role, *path)
+		return 0
+	case "list":
+		u, err := auth.LoadUsers(*path)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			return 1
+		}
+		for _, usr := range u.Names() {
+			fmt.Printf("%-20s %s\n", usr.Name, usr.Role)
+		}
+		return 0
+	}
+	fmt.Fprintln(os.Stderr, "usage: sentinel-agent user add|list [flags]")
+	return 2
 }

@@ -79,8 +79,8 @@ identity doesn't match.
 |--------|---------|
 | `201`  | New event stored. Body is the stored record. |
 | `200`  | Idempotent replay — `event_id` was already seen. Body is the **original** stored record, no new row created. |
-| `400`  | Malformed JSON, or a required field (`event`, `device_id`) is missing/blank. |
-| `401`  | Missing/malformed `Authorization` header, unknown token, or (see above) a mismatched device_id. |
+| `400`  | Malformed JSON, a required field (`event`, `device_id`) is missing/blank, or the body exceeds 1 MiB. |
+| `401`  | Missing/malformed `Authorization` header, or unknown token. (A mismatched `device_id` is **not** a 401 — see the UNMAPPED path above.) |
 | `500`  | Storage failure. |
 
 There is intentionally no `403`/`404` for an unmapped device — see above.
@@ -100,9 +100,79 @@ Two timestamps are stored per event:
 - `received_at` — server-observed, authoritative for ordering and
   `/v1/summary` window queries.
 
-## Reserved, not yet implemented
+## Batch: `POST /v1/events/batch`
 
-A heartbeat/device-inventory endpoint (app version, OS, current state,
-online/stale/down derivation) is reserved under protocol v1 but is **not**
-implemented in this phase (Tahap 1). Its exact shape is intentionally left
-unspecified here to avoid committing to a design prematurely.
+Same headers and auth as `POST /v1/events`. Used by SDKs to drain a
+backlog after the agent was unreachable.
+
+```json
+{"events": [ <event>, <event>, ... ]}
+```
+
+- 1–100 events per request; otherwise **400** and nothing is stored.
+- Each event follows the single-event rules above, independently. The
+  response is **200** whenever the batch itself was readable, with one
+  result per input, in order:
+
+```json
+{"results": [
+  {"index": 0, "event_id": "…", "status": "created",   "error_code": "STI-G03-PAY-002"},
+  {"index": 1, "event_id": "…", "status": "duplicate", "error_code": "STI-G03-PAY-002"},
+  {"index": 2, "event_id": "…", "status": "error", "error": "field 'event' is required"},
+  {"index": 3, "event_id": "…", "status": "error", "error": "failed to store event: …", "retryable": true}
+]}
+```
+
+A client may forget an event once its result is `created` or
+`duplicate`, or `error` without `retryable` (the same payload would fail
+again). It should retry only `retryable` errors. An agent without this
+endpoint answers **404**; the client then falls back to single posts.
+
+## Heartbeat: `POST /v1/heartbeat`
+
+Same headers and auth. The SDK sends this at most once a minute, **from the
+host application's own main loop** (`client.beat()`), so a hung app stops
+heartbeating and shows up as STALE/DOWN.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `device_id`      | string | Cross-checked only; the token decides which device this is. A mismatch is logged, nothing is tagged. |
+| `app_version`    | string | |
+| `sdk_version`    | string | |
+| `uptime_s`       | int    | Seconds since the app started. |
+| `outbox_pending` | int    | Events queued on the kiosk, not yet delivered. A non-zero value colours the gate yellow. |
+| `outbox_dropped` | int    | Events the SDK discarded since it started (queue/outbox full). |
+| `sent_at`        | string (RFC3339) | Client clock; informational. |
+
+Response **200** `{"status": "ok", "server_time": "<RFC3339>"}`. Heartbeats
+are not stored as events; they update the device's row in `device_state`.
+
+### Liveness and gate colour
+
+A device's *last seen* is its latest heartbeat or event (UNMAPPED events
+don't count). With the default thresholds (`status:` in config.yaml):
+
+| Status | Last seen |
+|--------|-----------|
+| `ONLINE` | ≤ 3 minutes ago |
+| `STALE`  | ≤ 10 minutes ago |
+| `DOWN`   | longer |
+| `NEVER`  | listed in devices.yaml, never heard from |
+
+Gate colour: **red** if DOWN/NEVER or a HIGH/CRITICAL event in the last 10
+minutes; **yellow** if STALE, a MEDIUM event in the last 10 minutes, or
+`outbox_pending > 0`; otherwise **green**.
+
+## Read API (dashboard)
+
+`GET /v1/fleet`, `GET /v1/devices/{device_id}`, `GET /v1/events`,
+`GET /v1/summary` and `GET /v1/auth/me` require a dashboard login: the
+session cookie from `POST /v1/auth/login`, or HTTP Basic credentials of a
+`users.yaml` user (for scripts). **Device tokens are rejected here** — a
+kiosk's credential is write-only and must not read other kiosks' data.
+`GET /v1/health` stays public and reveals no event or device data.
+
+`GET /v1/events` filters: `device_id`, `location`, `gate`, `error_code`,
+`event`, `severity` (minimum: `MEDIUM` also returns HIGH and CRITICAL),
+`since`/`until` (RFC3339, on `received_at`), `limit` (≤ 1000, default 100)
+and `before_id` for paging back (newest first).

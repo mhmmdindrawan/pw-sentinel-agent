@@ -1,0 +1,26 @@
+# systemd unit for the Parkways Sentinel Agent.
+# Install: copy to /etc/systemd/system/, then
+#   sudo systemctl daemon-reload && sudo systemctl enable --now parkways-sentinel
+[Unit]
+Description=Parkways Sentinel Agent
+Wants=network-online.target tailscaled.service
+After=network-online.target tailscaled.service
+
+[Service]
+User=sentinel
+Group=sentinel
+WorkingDirectory=/opt/parkways-sentinel
+ExecStart=/opt/parkways-sentinel/sentinel-agent -config /opt/parkways-sentinel/config.yaml
+# Keep the Telegram bot token out of config.yaml:
+#   SENTINEL_TELEGRAM_BOT_TOKEN=... in /etc/parkways-sentinel.env (mode 0600)
+EnvironmentFile=-/etc/parkways-sentinel.env
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/parkways-sentinel
+
+[Install]
+WantedBy=multi-user.target

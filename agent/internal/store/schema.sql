@@ -40,3 +40,39 @@ CREATE TABLE IF NOT EXISTS event_registry (
     number     INTEGER NOT NULL,
     severity   TEXT NOT NULL
 );
+
+-- Fleet view and retention filter by device over time.
+CREATE INDEX IF NOT EXISTS idx_events_device_received ON events(device_id, received_at);
+
+-- Latest known state per device (heartbeats + last event time). Kept out
+-- of `events` so a 60s heartbeat from every kiosk doesn't bloat it.
+CREATE TABLE IF NOT EXISTS device_state (
+    device_id         TEXT PRIMARY KEY,
+    last_heartbeat_at TEXT,
+    last_event_at     TEXT,
+    app_version       TEXT,
+    sdk_version       TEXT,
+    uptime_s          INTEGER NOT NULL DEFAULT 0,
+    outbox_pending    INTEGER NOT NULL DEFAULT 0,
+    outbox_dropped    INTEGER NOT NULL DEFAULT 0,
+    remote_addr       TEXT
+);
+
+-- Every alert actually sent, used for cooldowns and as an audit trail.
+CREATE TABLE IF NOT EXISTS alert_log (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    alert_key  TEXT NOT NULL,  -- e.g. "event:STI-G03-POS01:STI-G03-PAY-002", "status:STI-G03-POS01"
+    route      TEXT NOT NULL,
+    message    TEXT NOT NULL,
+    sent_at    TEXT NOT NULL,
+    ok         INTEGER NOT NULL,
+    error      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_alert_log_key ON alert_log(alert_key, route, sent_at);
+
+-- Small key/value store for agent-internal bookkeeping (e.g. the alerter's
+-- last processed event id, last known device statuses).
+CREATE TABLE IF NOT EXISTS agent_kv (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);

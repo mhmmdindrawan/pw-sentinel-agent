@@ -11,6 +11,7 @@ package devices
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -99,4 +100,24 @@ func (r *Registry) ByDeviceID(id string) (Entry, bool) {
 // Count returns the number of configured devices.
 func (r *Registry) Count() int {
 	return len(r.byDeviceID)
+}
+
+// All returns every configured device, sorted by location, gate, then
+// device_id — the order the fleet view lists them in.
+func (r *Registry) All() []Entry {
+	out := make([]Entry, 0, len(r.byDeviceID))
+	for _, e := range r.byDeviceID {
+		out = append(out, e)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.Location != b.Location {
+			return a.Location < b.Location
+		}
+		if a.Gate != b.Gate {
+			return a.Gate < b.Gate
+		}
+		return a.DeviceID < b.DeviceID
+	})
+	return out
 }
