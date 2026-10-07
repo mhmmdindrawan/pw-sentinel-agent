@@ -97,3 +97,13 @@ events:
 		t.Fatal("expected error for category mapped to two code prefixes")
 	}
 }
+
+func TestReservedNumbersDoNotAdvanceAllocation(t *testing.T) {
+	r, err := loadSeed(t, seed+"  SENTINEL_GAP: {category: SYSTEM, code: SYS, number: 901, severity: INFO}\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e := r.Allocate("FAN_FAILURE", "SYSTEM", "SYS", ""); e.Number != 2 {
+		t.Fatalf("got SYS-%03d, want SYS-002", e.Number)
+	}
+}
