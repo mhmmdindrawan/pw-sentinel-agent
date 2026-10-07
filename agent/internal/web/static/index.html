@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Parkways Sentinel</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="topbar" id="topbar" hidden>
+  <a class="brand" href="#/">Parkways Sentinel</a>
+  <nav>
+    <a href="#/" data-nav="fleet">Ringkasan</a>
+    <a href="#/events" data-nav="events">Event</a>
+  </nav>
+  <div class="who">
+    <span id="who-name"></span>
+    <button type="button" class="link" id="logout">Keluar</button>
+  </div>
+</header>
+<main id="app" aria-live="polite"></main>
+<script src="/static/app.js"></script>
+</body>
+</html>
