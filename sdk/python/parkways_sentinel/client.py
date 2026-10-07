@@ -22,7 +22,6 @@ is meant to run unmodified on kiosks stuck on that interpreter.
 import json
 import queue
 import threading
-import urllib.error
 import urllib.request
 import uuid
 from datetime import datetime, timezone
@@ -164,8 +163,7 @@ class SentinelClient:
         if self._token:
             headers["Authorization"] = "Bearer " + self._token
         req = urllib.request.Request(self._url, data=data, headers=headers, method="POST")
-        try:
-            with urllib.request.urlopen(req, timeout=self._timeout):
-                pass
-        except (urllib.error.URLError, TimeoutError, OSError):
-            pass  # agent unreachable/down — swallow, never impact the host app
+        # Failures (agent down, timeout, 401/4xx/5xx as HTTPError) propagate
+        # to _worker, which swallows them after notifying on_send_error.
+        with urllib.request.urlopen(req, timeout=self._timeout):
+            pass
