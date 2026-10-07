@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Build output
+/dist/
+/agent/sentinel-agent
+*.exe
+
+# Local Claude Code state
+.claude/scheduled_tasks.lock
+.claude/settings.local.json

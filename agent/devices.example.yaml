@@ -1,0 +1,28 @@
+# Parkways Sentinel Agent — device directory.
+#
+# Maps every kiosk/gate machine this agent monitors to its location/gate/pos
+# and the bearer token that authenticates it. Copy this file to devices.yaml
+# and fill in real values — devices.yaml holds live secrets and must NEVER
+# be committed (see .gitignore).
+#
+# Auth design: the TOKEN is the credential a request actually proves
+# possession of, so it is the primary lookup key. The device_id a client
+# claims in its payload is then cross-checked against the token's bound
+# device_id — a mismatch is accepted but tagged "UNMAPPED" rather than
+# rejected (see docs/protocol-v1.md). There is no hot-reload: adding or
+# changing a device here requires restarting the agent.
+#
+# Generate a token with, e.g.: openssl rand -hex 32
+
+devices:
+  KIOSK-STI-G03:
+    location: STI
+    gate: G03
+    pos: POS01
+    token: "REPLACE_ME_WITH_A_LONG_RANDOM_SECRET"
+
+  KIOSK-STI-G04:
+    location: STI
+    gate: G04
+    pos: POS01
+    token: "REPLACE_ME_WITH_ANOTHER_LONG_RANDOM_SECRET"
