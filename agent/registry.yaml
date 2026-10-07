@@ -1,0 +1,143 @@
+# Parkways Sentinel — Error Event Registry
+#
+# Maps a symbolic event name (used by SDKs/callers) to a stable error code.
+# Full error code format: <LOCATION>-<GATE>-<CODE>-<NUMBER, zero-padded to 3>
+# Example: STI-G03-PAY-002
+#
+# `category` is the human-readable category label (shown in dashboards/summaries).
+# `code` is the short abbreviation used inside the error code string itself.
+# `number` must be unique within a `code` group and, once shipped, must never
+# be reassigned to a different event — technicians memorize these.
+#
+# Unknown events sent by a caller (not listed here) are NOT rejected: the
+# agent allocates the next free number for the given category on first sight
+# and persists the mapping in its local database, so numbering stays stable
+# per-agent even for app-specific events that aren't in this seed file yet.
+
+events:
+  APP_STARTED:
+    category: APP
+    code: APP
+    number: 1
+    severity: INFO
+  APP_CRASHED:
+    category: APP
+    code: APP
+    number: 2
+    severity: CRITICAL
+
+  PAYMENT_REJECTED:
+    category: PAY
+    code: PAY
+    number: 1
+    severity: MEDIUM
+  PAYMENT_TIMEOUT:
+    category: PAY
+    code: PAY
+    number: 2
+    severity: HIGH
+  INSUFFICIENT_BALANCE:
+    category: PAY
+    code: PAY
+    number: 3
+    severity: MEDIUM
+
+  READER_DISCONNECTED:
+    category: READER
+    code: READER
+    number: 1
+    severity: HIGH
+  CARD_READ_TIMEOUT:
+    category: READER
+    code: READER
+    number: 2
+    severity: MEDIUM
+  READER_NOT_READY:
+    category: READER
+    code: READER
+    number: 3
+    severity: HIGH
+  READER_INIT_FAILED:
+    category: READER
+    code: READER
+    number: 4
+    severity: MEDIUM
+
+  PRINTER_DISCONNECTED:
+    category: PRINTER
+    code: PRINTER
+    number: 1
+    severity: MEDIUM
+  PRINT_FAILED:
+    category: PRINTER
+    code: PRINTER
+    number: 2
+    severity: MEDIUM
+
+  LPR_TIMEOUT:
+    category: LPR
+    code: LPR
+    number: 1
+    severity: MEDIUM
+
+  CCTV_DISCONNECTED:
+    category: CCTV
+    code: CCTV
+    number: 1
+    severity: MEDIUM
+
+  MQTT_DISCONNECTED:
+    category: MQTT
+    code: MQTT
+    number: 1
+    severity: MEDIUM
+  MQTT_CONNECT_FAILED:
+    category: MQTT
+    code: MQTT
+    number: 2
+    severity: HIGH
+
+  NETWORK_DISCONNECTED:
+    category: NETWORK
+    code: NET
+    number: 1
+    severity: HIGH
+  HIGH_LATENCY:
+    category: NETWORK
+    code: NET
+    number: 2
+    severity: MEDIUM
+
+  HTTP_SERVER_ERROR:
+    category: API
+    code: API
+    number: 1
+    severity: HIGH
+  HTTP_TIMEOUT:
+    category: API
+    code: API
+    number: 2
+    severity: HIGH
+  HTTP_CLIENT_ERROR:
+    category: API
+    code: API
+    number: 3
+    severity: MEDIUM
+
+  DATABASE_ERROR:
+    category: DATABASE
+    code: DB
+    number: 1
+    severity: HIGH
+
+  DEVICE_ERROR:
+    category: DEVICE
+    code: DEVICE
+    number: 1
+    severity: MEDIUM
+
+  SYSTEM_ERROR:
+    category: SYSTEM
+    code: SYS
+    number: 1
+    severity: MEDIUM
