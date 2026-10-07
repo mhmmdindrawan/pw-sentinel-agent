@@ -439,7 +439,7 @@ func TestRetentionPurge(t *testing.T) {
 
 func TestDashboardServedWithSecurityHeaders(t *testing.T) {
 	e := newTestServer(t)
-	for path, want := range map[string]string{"/": "<title>Parkways Sentinel</title>", "/static/app.js": "textContent"} {
+	for path, want := range map[string]string{"/": "<title>Parkways Sentinel</title>", "/static/js/core/dom.js": "textContent"} {
 		rec := e.do(http.MethodGet, path, "", nil)
 		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), want) {
 			t.Errorf("GET %s: %d, body missing %q", path, rec.Code, want)
@@ -450,5 +450,23 @@ func TestDashboardServedWithSecurityHeaders(t *testing.T) {
 	}
 	if rec := e.do(http.MethodGet, "/nope", "", nil); rec.Code != http.StatusNotFound {
 		t.Errorf("unknown path: %d, want 404", rec.Code)
+	}
+}
+
+func TestDashboardETagRevalidation(t *testing.T) {
+	e := newTestServer(t)
+	for _, path := range []string{"/", "/static/js/main.js", "/static/app.css"} {
+		rec := e.do(http.MethodGet, path, "", nil)
+		tag := rec.Header().Get("ETag")
+		if rec.Code != http.StatusOK || tag == "" {
+			t.Fatalf("GET %s: %d, ETag %q", path, rec.Code, tag)
+		}
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("If-None-Match", tag)
+		again := httptest.NewRecorder()
+		e.s.Handler().ServeHTTP(again, req)
+		if again.Code != http.StatusNotModified {
+			t.Errorf("GET %s with matching ETag: %d, want 304", path, again.Code)
+		}
 	}
 }

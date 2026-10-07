@@ -6,11 +6,13 @@
 <meta name="color-scheme" content="light dark">
 <title>Parkways Sentinel</title>
 <link rel="stylesheet" href="/static/app.css">
+<script type="module" src="/static/js/main.js"></script>
 </head>
 <body>
+<a class="skip-link" href="#" id="skip">Lewati ke konten utama</a>
 <header class="topbar" id="topbar" hidden>
   <a class="brand" href="#/">Parkways Sentinel</a>
-  <nav>
+  <nav aria-label="Navigasi utama">
     <a href="#/" data-nav="fleet">Ringkasan</a>
     <a href="#/events" data-nav="events">Event</a>
   </nav>
@@ -19,7 +21,8 @@
     <button type="button" class="link" id="logout">Keluar</button>
   </div>
 </header>
-<main id="app" aria-live="polite"></main>
-<script src="/static/app.js"></script>
+<div class="conn-banner" id="conn" role="status" hidden></div>
+<main id="app"></main>
+<noscript><p style="padding:16px">Dashboard ini membutuhkan JavaScript.</p></noscript>
 </body>
 </html>

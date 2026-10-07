@@ -30,7 +30,8 @@ What's in this repo:
 - **`deploy/`** — systemd unit and a multi-target build script.
 - **`docs/`** — [wire protocol](docs/protocol-v1.md),
   [VPS deployment runbook](docs/deploy-vps.md),
-  [kiosk integration guide](docs/integrasi-kiosk.md).
+  [kiosk integration guide](docs/integrasi-kiosk.md),
+  [AI-assisted debugging plan](docs/rencana-ai-debugging.md) (not built yet).
 
 Not built yet: incident correlation, AI analyzer and chat, per-site agents
 syncing to a central one.
@@ -141,6 +142,25 @@ the one `sentinel-agent device add` registered. Every call returns
 immediately; delivery happens on a background thread and never raises into
 the application. Report delivery problems to your own log with
 `on_send_error=lambda exc, payload: ...`.
+
+## Development
+
+```bash
+# Demo installation with every gate state and 30 days of history
+cd agent && go run ./cmd/sentinel-demo -dir /tmp/sentinel-demo -registry registry.yaml
+go build -o /tmp/sentinel-agent ./cmd/sentinel-agent
+cd /tmp/sentinel-demo && /tmp/sentinel-agent        # http://127.0.0.1:18787, login demo / demo-password-1
+go run ./cmd/sentinel-demo -heartbeat http://127.0.0.1:18787   # keeps live demo gates ONLINE
+
+# Tests
+cd agent && go test -race ./...
+cd sdk/python && python3 -m unittest discover -s tests
+cd e2e && npm ci && npx playwright test   # dashboard E2E + axe accessibility (uses system Chrome)
+```
+
+The dashboard is plain ES modules in `agent/internal/web/static/js/`
+(`core/` fetch, polling, connection state; `ui/` components; `views/`
+pages), embedded into the binary — no build step.
 
 ## Why decoupled from the main server?
 
