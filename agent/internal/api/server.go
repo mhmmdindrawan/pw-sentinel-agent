@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"parkways-sentinel/agent/internal/auth"
 	"parkways-sentinel/agent/internal/config"
 	"parkways-sentinel/agent/internal/devices"
 	"parkways-sentinel/agent/internal/model"
@@ -27,15 +28,27 @@ import (
 const UnmappedLocation = "UNMAPPED"
 
 type Server struct {
-	cfg    *config.Config
-	reg    *registry.Registry
-	devReg *devices.Registry
-	db     *store.Store
-	mux    *http.ServeMux
+	cfg      *config.Config
+	reg      *registry.Registry
+	devReg   *devices.Registry
+	db       *store.Store
+	users    *auth.Users
+	sessions *auth.Sessions
+	mux      *http.ServeMux
+	limiter  *loginLimiter
+
+	// Version is reported by /v1/health; set by main from build flags.
+	Version string
+	// now is swappable so tests can move the clock.
+	now func() time.Time
 }
 
-func New(cfg *config.Config, reg *registry.Registry, devReg *devices.Registry, db *store.Store) *Server {
-	s := &Server{cfg: cfg, reg: reg, devReg: devReg, db: db, mux: http.NewServeMux()}
+func New(cfg *config.Config, reg *registry.Registry, devReg *devices.Registry, db *store.Store,
+	users *auth.Users, sessions *auth.Sessions) *Server {
+	s := &Server{
+		cfg: cfg, reg: reg, devReg: devReg, db: db, users: users, sessions: sessions,
+		mux: http.NewServeMux(), limiter: newLoginLimiter(), Version: "dev", now: time.Now,
+	}
 	s.routes()
 	return s
 }
@@ -45,42 +58,130 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) routes() {
+	// Kiosk SDKs: device bearer token, write-only.
 	s.mux.HandleFunc("POST /v1/events", s.handlePostEvent)
-	s.mux.HandleFunc("GET /v1/events", s.handleGetEvents)
-	s.mux.HandleFunc("GET /v1/summary", s.handleSummary)
+	s.mux.HandleFunc("POST /v1/events/batch", s.handlePostBatch)
+	s.mux.HandleFunc("POST /v1/heartbeat", s.handleHeartbeat)
+
+	// Dashboard / NOC: user session (or HTTP Basic for scripts), read-only.
+	s.mux.HandleFunc("POST /v1/auth/login", s.handleLogin)
+	s.mux.HandleFunc("POST /v1/auth/logout", s.handleLogout)
+	s.mux.HandleFunc("GET /v1/auth/me", s.requireUser(s.handleMe))
+	s.mux.HandleFunc("GET /v1/events", s.requireUser(s.handleGetEvents))
+	s.mux.HandleFunc("GET /v1/summary", s.requireUser(s.handleSummary))
+	s.mux.HandleFunc("GET /v1/fleet", s.requireUser(s.handleFleet))
+	s.mux.HandleFunc("GET /v1/devices/{id}", s.requireUser(s.handleDevice))
+
 	s.mux.HandleFunc("GET /v1/health", s.handleHealth)
+	s.webRoutes()
+}
+
+// maxBatch caps POST /v1/events/batch so one request can't hold the
+// database for long.
+const maxBatch = 100
+
+// ingestResult is the outcome of storing one event.
+type ingestResult struct {
+	Event     model.StoredEvent
+	Duplicate bool
+	Status    int    // HTTP status this outcome maps to
+	Err       string // set when Status >= 400
 }
 
 func (s *Server) handlePostEvent(w http.ResponseWriter, r *http.Request) {
-	// 1. Auth first — the token is the primary lookup key, so an
-	// unauthenticated or unknown-token request is rejected before we even
-	// bother parsing the body.
-	token := bearerToken(r)
-	if token == "" {
-		writeError(w, http.StatusUnauthorized, "missing or malformed Authorization header")
-		return
-	}
-	deviceEntry, ok := s.devReg.ByToken(token)
+	dev, ok := s.authDevice(w, r)
 	if !ok {
-		writeError(w, http.StatusUnauthorized, "invalid token")
 		return
 	}
-
 	var in model.IncomingEvent
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json body: "+err.Error())
 		return
 	}
-	if strings.TrimSpace(in.Event) == "" {
-		writeError(w, http.StatusBadRequest, "field 'event' is required")
+	res := s.ingestOne(dev, in)
+	if res.Err != "" {
+		writeError(w, res.Status, res.Err)
 		return
+	}
+	writeJSON(w, res.Status, res.Event)
+}
+
+type batchRequest struct {
+	Events []model.IncomingEvent `json:"events"`
+}
+
+type batchItem struct {
+	Index     int    `json:"index"`
+	EventID   string `json:"event_id,omitempty"`
+	Status    string `json:"status"` // created | duplicate | error
+	ErrorCode string `json:"error_code,omitempty"`
+	Error     string `json:"error,omitempty"`
+	// Retryable is false for errors the same payload will always hit
+	// (validation), so the SDK can drop it instead of retrying forever.
+	Retryable bool `json:"retryable,omitempty"`
+}
+
+func (s *Server) handlePostBatch(w http.ResponseWriter, r *http.Request) {
+	dev, ok := s.authDevice(w, r)
+	if !ok {
+		return
+	}
+	var req batchRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json body: "+err.Error())
+		return
+	}
+	if len(req.Events) == 0 || len(req.Events) > maxBatch {
+		writeError(w, http.StatusBadRequest, "batch must contain 1.."+strconv.Itoa(maxBatch)+" events")
+		return
+	}
+	items := make([]batchItem, len(req.Events))
+	for i, in := range req.Events {
+		res := s.ingestOne(dev, in)
+		it := batchItem{Index: i, EventID: in.EventID}
+		switch {
+		case res.Err != "":
+			it.Status, it.Error, it.Retryable = "error", res.Err, res.Status >= 500
+		case res.Duplicate:
+			it.Status, it.ErrorCode = "duplicate", res.Event.ErrorCode
+		default:
+			it.Status, it.ErrorCode, it.EventID = "created", res.Event.ErrorCode, res.Event.EventID
+		}
+		items[i] = it
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"results": items})
+}
+
+// authDevice checks the device bearer token and writes 401 if it fails.
+func (s *Server) authDevice(w http.ResponseWriter, r *http.Request) (devices.Entry, bool) {
+	// Auth first — the token is the primary lookup key, so an
+	// unauthenticated or unknown-token request is rejected before we even
+	// bother parsing the body.
+	token := bearerToken(r)
+	if token == "" {
+		writeError(w, http.StatusUnauthorized, "missing or malformed Authorization header")
+		return devices.Entry{}, false
+	}
+	dev, ok := s.devReg.ByToken(token)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "invalid token")
+		return devices.Entry{}, false
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+	return dev, true
+}
+
+// ingestOne validates, resolves and stores one event for an authenticated
+// device. It is shared by the single and batch endpoints.
+func (s *Server) ingestOne(deviceEntry devices.Entry, in model.IncomingEvent) ingestResult {
+	if strings.TrimSpace(in.Event) == "" {
+		return ingestResult{Status: http.StatusBadRequest, Err: "field 'event' is required"}
 	}
 	if strings.TrimSpace(in.DeviceID) == "" {
-		writeError(w, http.StatusBadRequest, "field 'device_id' is required")
-		return
+		return ingestResult{Status: http.StatusBadRequest, Err: "field 'device_id' is required"}
 	}
 
-	// 2. Resolve location/gate/pos. A valid token always corresponds to a
+	// Resolve location/gate/pos. A valid token always corresponds to a
 	// known device, but the payload's *claimed* device_id might not match
 	// it (misconfigured SDK, token copied to the wrong kiosk, a renamed
 	// device_id) — that mismatch is the "unmapped" case: accept and tag,
@@ -92,15 +193,13 @@ func (s *Server) handlePostEvent(w http.ResponseWriter, r *http.Request) {
 		location, gate, pos = UnmappedLocation, in.DeviceID, ""
 	}
 
-	// 3. Idempotency: a client-supplied event_id lets an at-least-once
+	// Idempotency: a client-supplied event_id lets an at-least-once
 	// sender retry safely without creating duplicate rows.
 	if in.EventID != "" {
 		if existing, found, err := s.db.FindByEventID(in.EventID); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to check idempotency: "+err.Error())
-			return
+			return ingestResult{Status: http.StatusInternalServerError, Err: "failed to check idempotency: " + err.Error()}
 		} else if found {
-			writeJSON(w, http.StatusOK, existing)
-			return
+			return ingestResult{Event: existing, Duplicate: true, Status: http.StatusOK}
 		}
 	}
 	eventID := in.EventID
@@ -143,7 +242,7 @@ func (s *Server) handlePostEvent(w http.ResponseWriter, r *http.Request) {
 		appVersion = s.cfg.App.Version
 	}
 
-	receivedAt := time.Now().UTC().Format(time.RFC3339)
+	receivedAt := s.now().UTC().Format(time.RFC3339)
 	occurredAt := receivedAt
 	if in.OccurredAt != "" {
 		if _, err := time.Parse(time.RFC3339, in.OccurredAt); err == nil {
@@ -177,13 +276,59 @@ func (s *Server) handlePostEvent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id, err := s.db.InsertEvent(ev)
+	if store.IsUniqueViolation(err) {
+		// A concurrent retry of the same event_id won the race between our
+		// FindByEventID and InsertEvent — answer like any other duplicate.
+		if existing, found, ferr := s.db.FindByEventID(eventID); ferr == nil && found {
+			return ingestResult{Event: existing, Duplicate: true, Status: http.StatusOK}
+		}
+	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to store event: "+err.Error())
-		return
+		return ingestResult{Status: http.StatusInternalServerError, Err: "failed to store event: " + err.Error()}
 	}
 	ev.ID = id
 
-	writeJSON(w, http.StatusCreated, ev)
+	if location != UnmappedLocation {
+		if err := s.db.TouchEventSeen(deviceEntry.DeviceID, receivedAt, appVersion); err != nil {
+			log.Printf("warning: %v", err)
+		}
+	}
+	return ingestResult{Event: ev, Status: http.StatusCreated}
+}
+
+func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
+	dev, ok := s.authDevice(w, r)
+	if !ok {
+		return
+	}
+	var hb model.Heartbeat
+	if err := json.NewDecoder(r.Body).Decode(&hb); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json body: "+err.Error())
+		return
+	}
+	// The token decides which device this is; a mismatching device_id is
+	// only logged (an event would be tagged UNMAPPED, but a heartbeat has
+	// nothing to tag — it just proves the token's kiosk is alive).
+	if hb.DeviceID != "" && hb.DeviceID != dev.DeviceID {
+		log.Printf("warning: heartbeat device_id mismatch — token belongs to %q but payload claims %q", dev.DeviceID, hb.DeviceID)
+	}
+	now := s.now().UTC()
+	st := model.DeviceState{
+		DeviceID:        dev.DeviceID,
+		LastHeartbeatAt: now.Format(time.RFC3339),
+		AppVersion:      hb.AppVersion,
+		SDKVersion:      hb.SDKVersion,
+		UptimeS:         hb.UptimeS,
+		OutboxPending:   hb.OutboxPending,
+		OutboxDropped:   hb.OutboxDropped,
+		RemoteAddr:      remoteIP(r),
+	}
+	if err := s.db.UpsertHeartbeat(st); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// server_time lets the SDK notice a badly skewed kiosk clock.
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "server_time": now.Format(time.RFC3339)})
 }
 
 // bearerToken extracts the token from "Authorization: Bearer <token>",
@@ -195,48 +340,6 @@ func bearerToken(r *http.Request) string {
 		return ""
 	}
 	return strings.TrimSpace(strings.TrimPrefix(h, prefix))
-}
-
-func (s *Server) handleGetEvents(w http.ResponseWriter, r *http.Request) {
-	limit := 100
-	if v := r.URL.Query().Get("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			limit = n
-		}
-	}
-
-	events, err := s.db.RecentEvents(limit)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to query events: "+err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, events)
-}
-
-func (s *Server) handleSummary(w http.ResponseWriter, r *http.Request) {
-	minutes := 30
-	if v := r.URL.Query().Get("minutes"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			minutes = n
-		}
-	}
-
-	rows, err := s.db.Summary(time.Duration(minutes) * time.Minute)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to build summary: "+err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, rows)
-}
-
-func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	// Location/gate/pos are no longer single agent-wide values — this agent
-	// serves multiple kiosks, each resolved per event. See GET /v1/summary
-	// or /v1/events for per-device data.
-	writeJSON(w, http.StatusOK, map[string]any{
-		"status":             "ok",
-		"devices_configured": s.devReg.Count(),
-	})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

@@ -25,6 +25,25 @@ type Server struct {
 	RegistryPath string `yaml:"registry_path"`
 	DevicesPath  string `yaml:"devices_path"`
 	DBPath       string `yaml:"db_path"`
+	UsersPath    string `yaml:"users_path"`
+	// Signs dashboard session cookies. If empty, a random secret is
+	// generated at startup (everyone is logged out on restart).
+	SessionSecret string `yaml:"session_secret"`
+	// Base URL of the dashboard as NOC reaches it, used for links in
+	// alerts (e.g. "http://100.x.y.z:8787").
+	PublicURL string `yaml:"public_url"`
+}
+
+// Status sets how long a device may stay silent before it is shown as
+// STALE or DOWN, and how far back errors count toward a gate's colour.
+type Status struct {
+	OnlineMinutes      int `yaml:"online_minutes"`
+	StaleMinutes       int `yaml:"stale_minutes"`
+	ErrorWindowMinutes int `yaml:"error_window_minutes"`
+}
+
+type Retention struct {
+	Days int `yaml:"days"` // events older than this are deleted daily; 0 = default
 }
 
 type App struct {
@@ -32,9 +51,12 @@ type App struct {
 }
 
 type Config struct {
-	Identity Identity `yaml:"identity"`
-	Server   Server   `yaml:"server"`
-	App      App      `yaml:"app"`
+	Identity  Identity  `yaml:"identity"`
+	Server    Server    `yaml:"server"`
+	App       App       `yaml:"app"`
+	Status    Status    `yaml:"status"`
+	Retention Retention `yaml:"retention"`
+	Alert     Alert     `yaml:"alert"`
 }
 
 func Load(path string) (*Config, error) {
@@ -60,6 +82,26 @@ func Load(path string) (*Config, error) {
 	if cfg.Server.DBPath == "" {
 		cfg.Server.DBPath = "./data/sentinel.db"
 	}
+	if cfg.Server.UsersPath == "" {
+		cfg.Server.UsersPath = "users.yaml"
+	}
+	if cfg.Status.OnlineMinutes <= 0 {
+		cfg.Status.OnlineMinutes = 3
+	}
+	if cfg.Status.StaleMinutes <= 0 {
+		cfg.Status.StaleMinutes = 10
+	}
+	if cfg.Status.StaleMinutes < cfg.Status.OnlineMinutes {
+		return nil, fmt.Errorf("config %s: status.stale_minutes (%d) must be >= status.online_minutes (%d)",
+			path, cfg.Status.StaleMinutes, cfg.Status.OnlineMinutes)
+	}
+	if cfg.Status.ErrorWindowMinutes <= 0 {
+		cfg.Status.ErrorWindowMinutes = 10
+	}
+	if cfg.Retention.Days <= 0 {
+		cfg.Retention.Days = 90
+	}
+	cfg.Alert.applyDefaults()
 
 	return &cfg, nil
 }

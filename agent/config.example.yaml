@@ -1,26 +1,49 @@
 # Parkways Sentinel Agent — runtime configuration.
 # Copy this file to config.yaml next to the binary.
 #
-# One agent instance now serves MANY kiosks/gates over the LAN (or a VPN
-# like Tailscale) — location/gate identity per event comes from
-# devices.yaml (see devices.example.yaml), not from this file.
-
-# Vestigial: no longer used to stamp events (see devices.yaml). Kept only
-# as an optional instance-level label for future use (e.g. in logs).
-identity:
-  location: ""
-  gate: ""
-  pos: ""
+# One agent serves every kiosk/gate (MVP: one central agent on a VPS,
+# reached by kiosks and NOC over Tailscale). Location/gate identity per
+# event comes from devices.yaml, not from this file.
 
 server:
-  # Must be reachable from every kiosk this agent monitors — typically a
-  # LAN-bound address, not 127.0.0.1. Firewall this to the LAN/VPN segment
-  # the kiosks live on; do not expose it to the public internet, since
-  # Tahap 1's bearer tokens are static, non-rotating shared secrets.
-  listen_addr: "0.0.0.0:8787"
+  # Bind to the VPS's Tailscale IP, not 0.0.0.0, so the agent is never
+  # reachable from the public internet: device tokens are static secrets
+  # and the dashboard has no TLS of its own (Tailscale encrypts the link).
+  listen_addr: "100.64.0.1:8787"
   registry_path: "registry.yaml"
-  devices_path: "devices.yaml"
+  devices_path: "devices.yaml"        # kiosks — manage with `sentinel-agent device add`
+  users_path: "users.yaml"            # dashboard logins — `sentinel-agent user add`
   db_path: "./data/sentinel.db"
+  # Signs dashboard session cookies. Generate with: openssl rand -hex 32
+  # If empty, a random one is used and everyone is logged out on restart.
+  session_secret: ""
+  # How NOC opens the dashboard; used for links inside Telegram alerts.
+  public_url: "http://100.64.0.1:8787"
+
+status:
+  online_minutes: 3        # last heard from within this → ONLINE
+  stale_minutes: 10        # within this → STALE, otherwise DOWN
+  error_window_minutes: 10 # how far back errors colour a gate red/yellow
+
+retention:
+  days: 90                 # events older than this are deleted daily
+
+alert:
+  # Set the bot token via the SENTINEL_TELEGRAM_BOT_TOKEN environment
+  # variable rather than here. Alerts are off until a token and a route exist.
+  telegram_bot_token: ""
+  interval_seconds: 30
+  cooldown_minutes: 15          # per device + error code
+  outbox_backlog_threshold: 100 # alert when a kiosk has this many undelivered events
+  timezone: "Asia/Jakarta"
+  routes:
+    # - name: noc
+    #   chat_id: "-1001234567890"
+    #   min_severity: HIGH
+    #   locations: [STI]
+    # - name: pribadi
+    #   chat_id: "123456789"
+    #   min_severity: MEDIUM
 
 app:
   version: ""   # optional: default app_version stamped on events that omit one

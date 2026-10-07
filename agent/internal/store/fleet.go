@@ -1,0 +1,218 @@
+package store
+
+import (
+	"database/sql"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"parkways-sentinel/agent/internal/model"
+)
+
+// TouchEventSeen records that a device just sent an event, so a kiosk that
+// reports errors counts as alive even between heartbeats.
+func (s *Store) TouchEventSeen(deviceID, at, appVersion string) error {
+	_, err := s.db.Exec(`
+		INSERT INTO device_state (device_id, last_event_at, app_version)
+		VALUES (?, ?, ?)
+		ON CONFLICT(device_id) DO UPDATE SET
+			last_event_at = excluded.last_event_at,
+			app_version   = COALESCE(excluded.app_version, device_state.app_version)`,
+		deviceID, at, nullable(appVersion))
+	if err != nil {
+		return fmt.Errorf("touch device_state: %w", err)
+	}
+	return nil
+}
+
+// UpsertHeartbeat stores the latest heartbeat for a device.
+func (s *Store) UpsertHeartbeat(st model.DeviceState) error {
+	_, err := s.db.Exec(`
+		INSERT INTO device_state (device_id, last_heartbeat_at, app_version, sdk_version,
+		                          uptime_s, outbox_pending, outbox_dropped, remote_addr)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(device_id) DO UPDATE SET
+			last_heartbeat_at = excluded.last_heartbeat_at,
+			app_version       = COALESCE(excluded.app_version, device_state.app_version),
+			sdk_version       = COALESCE(excluded.sdk_version, device_state.sdk_version),
+			uptime_s          = excluded.uptime_s,
+			outbox_pending    = excluded.outbox_pending,
+			outbox_dropped    = excluded.outbox_dropped,
+			remote_addr       = excluded.remote_addr`,
+		st.DeviceID, st.LastHeartbeatAt, nullable(st.AppVersion), nullable(st.SDKVersion),
+		st.UptimeS, st.OutboxPending, st.OutboxDropped, nullable(st.RemoteAddr))
+	if err != nil {
+		return fmt.Errorf("upsert heartbeat: %w", err)
+	}
+	return nil
+}
+
+// DeviceStates returns every known device state keyed by device_id.
+func (s *Store) DeviceStates() (map[string]model.DeviceState, error) {
+	rows, err := s.db.Query(`
+		SELECT device_id, last_heartbeat_at, last_event_at, app_version, sdk_version,
+		       uptime_s, outbox_pending, outbox_dropped, remote_addr
+		FROM device_state`)
+	if err != nil {
+		return nil, fmt.Errorf("query device_state: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[string]model.DeviceState{}
+	for rows.Next() {
+		var st model.DeviceState
+		var hb, ev, appV, sdkV, addr sql.NullString
+		if err := rows.Scan(&st.DeviceID, &hb, &ev, &appV, &sdkV,
+			&st.UptimeS, &st.OutboxPending, &st.OutboxDropped, &addr); err != nil {
+			return nil, fmt.Errorf("scan device_state: %w", err)
+		}
+		st.LastHeartbeatAt, st.LastEventAt = hb.String, ev.String
+		st.AppVersion, st.SDKVersion, st.RemoteAddr = appV.String, sdkV.String, addr.String
+		out[st.DeviceID] = st
+	}
+	return out, rows.Err()
+}
+
+// DeviceErrorStats summarises non-INFO events per device: counts over the
+// last hour and day, the worst severity within `window`, and the latest
+// error. UNMAPPED events are excluded — they don't belong to the device
+// whose id they claim.
+func (s *Store) DeviceErrorStats(now time.Time, window time.Duration) (map[string]model.DeviceErrorStats, error) {
+	h1 := now.Add(-time.Hour).UTC().Format(time.RFC3339)
+	h24 := now.Add(-24 * time.Hour).UTC().Format(time.RFC3339)
+	win := now.Add(-window).UTC().Format(time.RFC3339)
+
+	rows, err := s.db.Query(`
+		SELECT device_id,
+		       SUM(received_at >= ?),
+		       COUNT(*),
+		       MAX(CASE WHEN received_at >= ? THEN `+severityRankSQL+` ELSE 0 END)
+		FROM events
+		WHERE received_at >= ? AND severity != 'INFO' AND location != 'UNMAPPED'
+		GROUP BY device_id`, h1, win, h24)
+	if err != nil {
+		return nil, fmt.Errorf("query device error stats: %w", err)
+	}
+	defer rows.Close()
+
+	out := map[string]model.DeviceErrorStats{}
+	for rows.Next() {
+		var id string
+		var st model.DeviceErrorStats
+		var worst int
+		if err := rows.Scan(&id, &st.Errors1h, &st.Errors24h, &worst); err != nil {
+			return nil, fmt.Errorf("scan device error stats: %w", err)
+		}
+		st.WorstRecent = severityName(worst)
+		out[id] = st
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Latest error per device, regardless of age, so the fleet view can
+	// show "last problem was X, 3 days ago".
+	last, err := s.db.Query(`SELECT ` + eventColumns + ` FROM events WHERE id IN (
+		SELECT MAX(id) FROM events
+		WHERE severity != 'INFO' AND location != 'UNMAPPED'
+		GROUP BY device_id)`)
+	if err != nil {
+		return nil, fmt.Errorf("query last errors: %w", err)
+	}
+	defer last.Close()
+	for last.Next() {
+		ev, err := scanEvent(last)
+		if err != nil {
+			return nil, err
+		}
+		st := out[ev.DeviceID]
+		st.LastError = &ev
+		out[ev.DeviceID] = st
+	}
+	return out, last.Err()
+}
+
+// HourlyErrors returns non-INFO event counts for one device for each of the
+// 24 hours ending at now, oldest first, keyed "2026-10-07T03" (UTC).
+func (s *Store) HourlyErrors(deviceID string, now time.Time) ([]HourCount, error) {
+	now = now.UTC().Truncate(time.Hour)
+	start := now.Add(-23 * time.Hour)
+	rows, err := s.db.Query(`
+		SELECT substr(received_at, 1, 13) AS hour, COUNT(*)
+		FROM events
+		WHERE device_id = ? AND received_at >= ? AND severity != 'INFO' AND location != 'UNMAPPED'
+		GROUP BY hour`, deviceID, start.Format(time.RFC3339))
+	if err != nil {
+		return nil, fmt.Errorf("query hourly errors: %w", err)
+	}
+	defer rows.Close()
+	counts := map[string]int{}
+	for rows.Next() {
+		var h string
+		var n int
+		if err := rows.Scan(&h, &n); err != nil {
+			return nil, err
+		}
+		counts[h] = n
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]HourCount, 0, 24)
+	for t := start; !t.After(now); t = t.Add(time.Hour) {
+		h := t.Format("2006-01-02T15")
+		out = append(out, HourCount{Hour: h, Count: counts[h]})
+	}
+	return out, nil
+}
+
+type HourCount struct {
+	Hour  string `json:"hour"`
+	Count int    `json:"count"`
+}
+
+// CountUnmapped returns how many UNMAPPED events arrived since `since` —
+// a misconfigured kiosk the fleet view should point out.
+func (s *Store) CountUnmapped(since time.Time) (int, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM events WHERE location = 'UNMAPPED' AND received_at >= ?`,
+		since.UTC().Format(time.RFC3339)).Scan(&n)
+	return n, err
+}
+
+// PurgeEventsBefore deletes events received before cutoff and returns how
+// many were removed.
+func (s *Store) PurgeEventsBefore(cutoff time.Time) (int64, error) {
+	res, err := s.db.Exec(`DELETE FROM events WHERE received_at < ?`, cutoff.UTC().Format(time.RFC3339))
+	if err != nil {
+		return 0, fmt.Errorf("purge events: %w", err)
+	}
+	return res.RowsAffected()
+}
+
+// GetKV returns the value for key, or "" if unset.
+func (s *Store) GetKV(key string) (string, error) {
+	var v string
+	err := s.db.QueryRow(`SELECT value FROM agent_kv WHERE key = ?`, key).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return v, err
+}
+
+func (s *Store) SetKV(key, value string) error {
+	_, err := s.db.Exec(`INSERT INTO agent_kv (key, value) VALUES (?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
+	return err
+}
+
+// IsUniqueViolation reports whether err came from a UNIQUE constraint —
+// i.e. a concurrent request already stored the same event_id.
+func IsUniqueViolation(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
+}
+
+func severityName(rank int) string {
+	return [...]string{"", "INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"}[rank]
+}
