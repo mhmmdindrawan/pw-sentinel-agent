@@ -216,3 +216,38 @@ func IsUniqueViolation(err error) bool {
 func severityName(rank int) string {
 	return [...]string{"", "INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"}[rank]
 }
+
+// MaxEventID returns the newest event id, or 0 for an empty table.
+func (s *Store) MaxEventID() (int64, error) {
+	var id sql.NullInt64
+	err := s.db.QueryRow(`SELECT MAX(id) FROM events`).Scan(&id)
+	return id.Int64, err
+}
+
+// LastAlertSent returns when an alert with this key last reached this
+// route successfully.
+func (s *Store) LastAlertSent(key, route string) (time.Time, bool, error) {
+	var at string
+	err := s.db.QueryRow(`SELECT sent_at FROM alert_log WHERE alert_key = ? AND route = ? AND ok = 1
+		ORDER BY sent_at DESC LIMIT 1`, key, route).Scan(&at)
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	t, err := time.Parse(time.RFC3339, at)
+	return t, err == nil, err
+}
+
+// LogAlert records one alert delivery attempt.
+func (s *Store) LogAlert(key, route, message string, at time.Time, sendErr error) error {
+	var errText any
+	ok := 1
+	if sendErr != nil {
+		ok, errText = 0, sendErr.Error()
+	}
+	_, err := s.db.Exec(`INSERT INTO alert_log (alert_key, route, message, sent_at, ok, error) VALUES (?, ?, ?, ?, ?, ?)`,
+		key, route, message, at.UTC().Format(time.RFC3339), ok, errText)
+	return err
+}

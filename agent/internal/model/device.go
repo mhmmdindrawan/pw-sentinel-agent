@@ -40,6 +40,7 @@ type EventFilter struct {
 	Since     string
 	Until     string
 	BeforeID  int64 // pagination: only rows with id < BeforeID
+	AfterID   int64 // only rows with id > AfterID, returned oldest first
 	Limit     int
 }
 

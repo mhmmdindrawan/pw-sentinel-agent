@@ -139,7 +139,8 @@ func (s *Store) RecentEvents(limit int) ([]model.StoredEvent, error) {
 	return s.QueryEvents(model.EventFilter{Limit: limit})
 }
 
-// QueryEvents returns events matching f, newest first. Limit defaults to
+// QueryEvents returns events matching f, newest first (oldest first when
+// f.AfterID is set). Limit defaults to
 // 100 and is capped at 1000; page further with f.BeforeID set to the
 // smallest id of the previous page.
 func (s *Store) QueryEvents(f model.EventFilter) ([]model.StoredEvent, error) {
@@ -147,7 +148,11 @@ func (s *Store) QueryEvents(f model.EventFilter) ([]model.StoredEvent, error) {
 		f.Limit = 100
 	}
 	where, args := eventWhere(f)
-	q := `SELECT ` + eventColumns + ` FROM events` + where + ` ORDER BY id DESC LIMIT ?`
+	order := " ORDER BY id DESC"
+	if f.AfterID > 0 {
+		order = " ORDER BY id ASC" // tailing new events: oldest unseen first
+	}
+	q := `SELECT ` + eventColumns + ` FROM events` + where + order + ` LIMIT ?`
 	rows, err := s.db.Query(q, append(args, f.Limit)...)
 	if err != nil {
 		return nil, fmt.Errorf("query events: %w", err)
@@ -199,6 +204,9 @@ func eventWhere(f model.EventFilter) (string, []any) {
 	}
 	if f.BeforeID > 0 {
 		add("id < ?", f.BeforeID)
+	}
+	if f.AfterID > 0 {
+		add("id > ?", f.AfterID)
 	}
 	if len(conds) == 0 {
 		return "", nil

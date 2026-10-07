@@ -10,6 +10,7 @@
 //	sentinel-agent device list
 //	sentinel-agent user add -name NAME -role viewer|admin  (password on stdin)
 //	sentinel-agent user list
+//	sentinel-agent alert test [-config config.yaml]        send a test message to every route
 //	sentinel-agent version
 package main
 
@@ -26,7 +27,9 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	_ "time/tzdata" // alert timezones must resolve on Windows too
 
+	"parkways-sentinel/agent/internal/alert"
 	"parkways-sentinel/agent/internal/api"
 	"parkways-sentinel/agent/internal/auth"
 	"parkways-sentinel/agent/internal/config"
@@ -45,6 +48,8 @@ func main() {
 			os.Exit(runDevice(os.Args[2:]))
 		case "user":
 			os.Exit(runUser(os.Args[2:]))
+		case "alert":
+			os.Exit(runAlert(os.Args[2:]))
 		case "version":
 			fmt.Println(version)
 			return
@@ -113,6 +118,21 @@ func serve() {
 	defer stop()
 
 	go runRetention(ctx, db, cfg.Retention.Days)
+
+	if cfg.Alert.Enabled() {
+		// Every kiosk looks DOWN right after a restart until it heartbeats
+		// again, so hold status alerts for one stale period.
+		grace := time.Duration(cfg.Status.StaleMinutes) * time.Minute
+		al, err := alert.New(cfg.Alert, cfg.Server.PublicURL, grace, srv.Fleet, db,
+			alert.NewTelegram(cfg.Alert.TelegramBotToken), time.Now())
+		if err != nil {
+			log.Fatalf("alert: %v", err)
+		}
+		go al.Run(ctx)
+		log.Printf("alerts: Telegram to %d route(s), every %ds", len(cfg.Alert.Routes), cfg.Alert.IntervalSeconds)
+	} else {
+		log.Printf("notice: alerts off (set SENTINEL_TELEGRAM_BOT_TOKEN and alert.routes to enable)")
+	}
 
 	go func() {
 		log.Printf("Parkways Sentinel Agent %s listening on %s (%d device(s), %d dashboard user(s))",
@@ -240,4 +260,41 @@ func runUser(args []string) int {
 	}
 	fmt.Fprintln(os.Stderr, "usage: sentinel-agent user add|list [flags]")
 	return 2
+}
+
+func runAlert(args []string) int {
+	if len(args) == 0 || args[0] != "test" {
+		fmt.Fprintln(os.Stderr, "usage: sentinel-agent alert test [-config config.yaml]")
+		return 2
+	}
+	fs := flag.NewFlagSet("alert test", flag.ContinueOnError)
+	configPath := fs.String("config", "config.yaml", "path to agent config file")
+	if err := fs.Parse(args[1:]); err != nil {
+		return 2
+	}
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	if !cfg.Alert.Enabled() {
+		fmt.Fprintln(os.Stderr, "alerts are off: set SENTINEL_TELEGRAM_BOT_TOKEN and at least one alert.routes entry")
+		return 1
+	}
+	tg := alert.NewTelegram(cfg.Alert.TelegramBotToken)
+	host, _ := os.Hostname()
+	failed := 0
+	for _, r := range cfg.Alert.Routes {
+		msg := fmt.Sprintf("✅ Tes notifikasi Parkways Sentinel (%s)\nRute: %s · min severity %s\nDikirim dari %s.", version, r.Name, r.MinSeverity, host)
+		if err := tg.Send(context.Background(), r.ChatID, msg); err != nil {
+			fmt.Printf("%-12s GAGAL: %v\n", r.Name, err)
+			failed++
+		} else {
+			fmt.Printf("%-12s terkirim ke chat %s\n", r.Name, r.ChatID)
+		}
+	}
+	if failed > 0 {
+		return 1
+	}
+	return 0
 }
