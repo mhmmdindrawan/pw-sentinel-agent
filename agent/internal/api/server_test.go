@@ -436,3 +436,19 @@ func TestRetentionPurge(t *testing.T) {
 		t.Fatalf("remaining = %d, want 1", len(evs))
 	}
 }
+
+func TestDashboardServedWithSecurityHeaders(t *testing.T) {
+	e := newTestServer(t)
+	for path, want := range map[string]string{"/": "<title>Parkways Sentinel</title>", "/static/app.js": "textContent"} {
+		rec := e.do(http.MethodGet, path, "", nil)
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), want) {
+			t.Errorf("GET %s: %d, body missing %q", path, rec.Code, want)
+		}
+		if csp := rec.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "default-src 'self'") {
+			t.Errorf("GET %s: CSP = %q", path, csp)
+		}
+	}
+	if rec := e.do(http.MethodGet, "/nope", "", nil); rec.Code != http.StatusNotFound {
+		t.Errorf("unknown path: %d, want 404", rec.Code)
+	}
+}
