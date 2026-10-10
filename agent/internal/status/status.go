@@ -65,6 +65,29 @@ func SeverityRank(sev string) int {
 	return 0
 }
 
+// NormalizeSeverity maps a severity to the agent's scale (INFO, LOW,
+// MEDIUM, HIGH, CRITICAL), also accepting common logging level names, so an
+// app that sends Python's "WARNING"/"ERROR" still colours gates and fires
+// alerts. ok is false for anything else.
+func NormalizeSeverity(sev string) (string, bool) {
+	s := strings.ToUpper(strings.TrimSpace(sev))
+	switch s {
+	case "INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL":
+		return s, true
+	case "DEBUG", "TRACE":
+		return "INFO", true
+	case "NOTICE":
+		return "LOW", true
+	case "WARN", "WARNING":
+		return "MEDIUM", true
+	case "ERR", "ERROR":
+		return "HIGH", true
+	case "CRIT", "FATAL", "ALERT", "EMERG", "EMERGENCY":
+		return "CRITICAL", true
+	}
+	return "", false
+}
+
 // GateColor combines liveness with the worst error severity seen in the
 // recent error window and the SDK's queued-event backlog:
 //

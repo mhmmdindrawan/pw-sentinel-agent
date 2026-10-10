@@ -16,6 +16,8 @@ import (
 	"sync"
 
 	"gopkg.in/yaml.v3"
+
+	"parkways-sentinel/agent/internal/status"
 )
 
 type Entry struct {
@@ -72,10 +74,17 @@ func Load(path string) (*Registry, error) {
 			Category:  strings.ToUpper(e.Category),
 			Code:      strings.ToUpper(e.Code),
 			Number:    e.Number,
-			Severity:  strings.ToUpper(e.Severity),
+			Severity:  "MEDIUM",
 		}
-		if entry.Severity == "" {
-			entry.Severity = "MEDIUM"
+		if e.Severity != "" {
+			sev, ok := status.NormalizeSeverity(e.Severity)
+			if !ok {
+				return nil, fmt.Errorf("registry %s: event %s has invalid severity %q (use INFO, LOW, MEDIUM, HIGH or CRITICAL)", path, name, e.Severity)
+			}
+			entry.Severity = sev
+		}
+		if entry.Number < 1 || entry.Number >= OverflowNumber && entry.Number < ReservedFrom || entry.Number > 999 {
+			return nil, fmt.Errorf("registry %s: event %s has number %d (use 1-%d, or %d-999 for SDK events)", path, name, entry.Number, OverflowNumber-1, ReservedFrom)
 		}
 		r.register(entry)
 		if prev, ok := r.catToCode[entry.Category]; ok && prev != entry.Code {
@@ -119,6 +128,7 @@ func (r *Registry) Lookup(eventName string) (Entry, bool) {
 func (r *Registry) Register(e Entry) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	e.Severity = defaultSeverity(e.Severity)
 	r.register(e)
 }
 
@@ -126,6 +136,20 @@ func (r *Registry) Register(e Entry) {
 // itself (registry.yaml). Allocation ignores it, so learned events keep
 // counting up from the regular range (SYS-002, not SYS-902).
 const ReservedFrom = 900
+
+// OverflowNumber is shared by every new event name once a code group has
+// used up 1..OverflowNumber-1. An app that keeps inventing names (say, with
+// an id baked in) then can't grow the registry without bound or spill into
+// the reserved range; the real name is still stored on each event.
+const OverflowNumber = ReservedFrom - 1
+
+// defaultSeverity normalizes a severity, falling back to MEDIUM.
+func defaultSeverity(sev string) string {
+	if s, ok := status.NormalizeSeverity(sev); ok {
+		return s
+	}
+	return "MEDIUM"
+}
 
 func (r *Registry) register(e Entry) {
 	r.entries[e.EventName] = e
@@ -135,10 +159,11 @@ func (r *Registry) register(e Entry) {
 }
 
 // Allocate resolves an unknown event name to a brand new Entry, assigning
-// the next free number within the given code group. The caller is
-// responsible for persisting it and then calling Register so the mapping
-// survives a restart.
-func (r *Registry) Allocate(eventName, category, code, severity string) Entry {
+// the next free number within the given code group. isNew is true only for
+// a fresh allocation, which the caller must persist so the mapping survives
+// a restart; it is false when a concurrent request already allocated this
+// name, and for the shared OverflowNumber entry once the group is full.
+func (r *Registry) Allocate(eventName, category, code, severity string) (e Entry, isNew bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -147,25 +172,23 @@ func (r *Registry) Allocate(eventName, category, code, severity string) Entry {
 	// (the store keeps only the first, so a fresh one would change the
 	// event's code after a restart).
 	if e, ok := r.entries[eventName]; ok {
-		return e
+		return e, false
 	}
 
-	code = strings.ToUpper(code)
-	category = strings.ToUpper(category)
-	if severity == "" {
-		severity = "MEDIUM"
-	}
-
-	r.maxNum[code]++
 	entry := Entry{
 		EventName: eventName,
-		Category:  category,
-		Code:      code,
-		Number:    r.maxNum[code],
-		Severity:  strings.ToUpper(severity),
+		Category:  strings.ToUpper(category),
+		Code:      strings.ToUpper(code),
+		Severity:  defaultSeverity(severity),
 	}
+	if r.maxNum[entry.Code]+1 >= OverflowNumber {
+		entry.Number = OverflowNumber
+		return entry, false
+	}
+	r.maxNum[entry.Code]++
+	entry.Number = r.maxNum[entry.Code]
 	r.entries[eventName] = entry
-	return entry
+	return entry, true
 }
 
 // ErrorCode formats the final identifier: LOCATION-GATE-CODE-NUMBER.

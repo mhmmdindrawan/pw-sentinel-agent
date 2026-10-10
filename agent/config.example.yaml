@@ -19,6 +19,9 @@ server:
   session_secret: ""
   # How NOC opens the dashboard; used for links inside Telegram alerts.
   public_url: "http://100.64.0.1:8787"
+  # Failed (>= 400) and slow (>= 2s) requests are always logged; set true
+  # to log every request while debugging (one line per kiosk heartbeat).
+  log_requests: false
 
 status:
   online_minutes: 3        # last heard from within this → ONLINE
@@ -44,6 +47,14 @@ alert:
     # - name: pribadi
     #   chat_id: "123456789"
     #   min_severity: MEDIUM
+
+monitor:
+  # Dead-man's switch for the agent itself: while the agent and its database
+  # work it requests this URL every interval, and the service (e.g. a free
+  # healthchecks.io check, or an Uptime Kuma "push" monitor) alerts when the
+  # pings stop. Prefer the SENTINEL_PING_URL environment variable.
+  ping_url: ""
+  ping_interval_seconds: 60
 
 app:
   version: ""   # optional: default app_version stamped on events that omit one

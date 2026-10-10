@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -112,12 +113,21 @@ func serve() {
 		Addr:              cfg.Server.ListenAddr,
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
+		// Bodies are at most 1 MiB and answers are bounded queries; a client
+		// slower than this is stuck, and its connection is better freed.
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 60 * time.Second,
+		IdleTimeout:  2 * time.Minute,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	go runRetention(ctx, db, cfg.Retention.Days)
+	if cfg.Monitor.PingURL != "" {
+		go runPing(ctx, db, cfg.Monitor.PingURL, time.Duration(cfg.Monitor.PingIntervalSeconds)*time.Second)
+		log.Printf("monitor: pinging %s every %ds", redactURL(cfg.Monitor.PingURL), cfg.Monitor.PingIntervalSeconds)
+	}
 
 	if cfg.Alert.Enabled() {
 		// Every kiosk looks DOWN right after a restart until it heartbeats
@@ -173,6 +183,62 @@ func runRetention(ctx context.Context, db *store.Store, days int) {
 			purge()
 		}
 	}
+}
+
+// runPing requests url every interval while the database answers, so a
+// dead-man's-switch service raises the alarm when the agent, its database
+// or the VPS stops. Only changes between working and failing are logged.
+func runPing(ctx context.Context, db *store.Store, url string, every time.Duration) {
+	client := &http.Client{Timeout: 10 * time.Second}
+	failing := false
+	ping := func() {
+		err := func() error {
+			if _, err := db.MaxEventID(); err != nil {
+				return fmt.Errorf("database check: %w", err)
+			}
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+			if err != nil {
+				return err
+			}
+			resp, err := client.Do(req)
+			if err != nil {
+				return err
+			}
+			resp.Body.Close()
+			if resp.StatusCode >= 300 {
+				return fmt.Errorf("HTTP %d", resp.StatusCode)
+			}
+			return nil
+		}()
+		switch {
+		case err != nil && !failing && ctx.Err() == nil:
+			log.Printf("monitor: ping failed: %s", strings.ReplaceAll(err.Error(), url, redactURL(url)))
+		case err == nil && failing:
+			log.Printf("monitor: ping working again")
+		}
+		failing = err != nil
+	}
+	ping()
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			ping()
+		}
+	}
+}
+
+// redactURL keeps a ping URL's host but hides its path, which for most
+// services is the secret check id.
+func redactURL(raw string) string {
+	u, err := neturl.Parse(raw)
+	if err != nil || u.Host == "" {
+		return "<ping url>"
+	}
+	return u.Scheme + "://" + u.Host + "/…"
 }
 
 func runDevice(args []string) int {

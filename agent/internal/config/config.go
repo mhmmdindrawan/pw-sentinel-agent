@@ -32,6 +32,8 @@ type Server struct {
 	// Base URL of the dashboard as NOC reaches it, used for links in
 	// alerts (e.g. "http://100.x.y.z:8787").
 	PublicURL string `yaml:"public_url"`
+	// Log every request, not just failed (>= 400) and slow ones.
+	LogRequests bool `yaml:"log_requests"`
 }
 
 // Status sets how long a device may stay silent before it is shown as
@@ -50,6 +52,15 @@ type App struct {
 	Version string `yaml:"version"`
 }
 
+// Monitor lets an outside service notice when the agent itself is down: the
+// agent requests PingURL every interval while its database answers, and a
+// dead-man's-switch service (healthchecks.io, Uptime Kuma push, ...) alerts
+// when the pings stop. Alerts can't cover this — they come from the agent.
+type Monitor struct {
+	PingURL             string `yaml:"ping_url"`
+	PingIntervalSeconds int    `yaml:"ping_interval_seconds"`
+}
+
 type Config struct {
 	Identity  Identity  `yaml:"identity"`
 	Server    Server    `yaml:"server"`
@@ -57,6 +68,7 @@ type Config struct {
 	Status    Status    `yaml:"status"`
 	Retention Retention `yaml:"retention"`
 	Alert     Alert     `yaml:"alert"`
+	Monitor   Monitor   `yaml:"monitor"`
 }
 
 func Load(path string) (*Config, error) {
@@ -100,6 +112,12 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Retention.Days <= 0 {
 		cfg.Retention.Days = 90
+	}
+	if v := os.Getenv("SENTINEL_PING_URL"); v != "" {
+		cfg.Monitor.PingURL = v
+	}
+	if cfg.Monitor.PingIntervalSeconds <= 0 {
+		cfg.Monitor.PingIntervalSeconds = 60
 	}
 	cfg.Alert.applyDefaults()
 

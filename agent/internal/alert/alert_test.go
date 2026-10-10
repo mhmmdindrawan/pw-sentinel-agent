@@ -19,11 +19,13 @@ import (
 type sent struct{ chat, text string }
 
 type fakeSender struct {
-	msgs []sent
-	fail bool
+	msgs     []sent
+	fail     bool
+	attempts int
 }
 
 func (f *fakeSender) Send(_ context.Context, chat, text string) error {
+	f.attempts++
 	if f.fail {
 		return errors.New("network down")
 	}
@@ -249,6 +251,32 @@ func TestFailedSendIsRetried(t *testing.T) {
 	e.tick(30 * time.Second)
 	if got := e.sender.to("noc-chat"); len(got) != 1 || !strings.Contains(got[0], "READER_NOT_READY") {
 		t.Fatalf("retry: %q", got)
+	}
+}
+
+func TestUnreachableTelegramIsTriedOncePerTick(t *testing.T) {
+	e := newEnv(t)
+	e.tick(time.Second)
+	e.sender.fail = true
+	for i := 0; i < 5; i++ {
+		e.event("STI-G03-POS01", "STI", "G03", fmt.Sprintf("EV_%d", i), fmt.Sprintf("STI-G03-APP-%03d", i+10), "HIGH")
+		before := e.sender.attempts
+		e.tick(30 * time.Second)
+		// noc and pribadi want HIGH events from STI; lbi doesn't.
+		if got := e.sender.attempts - before; got != 2 {
+			t.Fatalf("tick %d: %d send attempts, want one per route (2)", i, got)
+		}
+	}
+	e.sender.fail = false
+	e.tick(30 * time.Second)
+	got := e.sender.to("noc-chat")
+	if len(got) != 5 {
+		t.Fatalf("after recovery noc got %d messages, want all 5", len(got))
+	}
+	for i, msg := range got {
+		if !strings.Contains(msg, fmt.Sprintf("EV_%d", i)) {
+			t.Errorf("message %d out of order: %q", i, msg)
+		}
 	}
 }
 

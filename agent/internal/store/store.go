@@ -217,6 +217,12 @@ func eventWhere(f model.EventFilter) (string, []any) {
 // severityRankSQL mirrors status.SeverityRank inside SQL.
 const severityRankSQL = `(CASE severity WHEN 'INFO' THEN 1 WHEN 'LOW' THEN 2 WHEN 'MEDIUM' THEN 3 WHEN 'HIGH' THEN 4 WHEN 'CRITICAL' THEN 5 ELSE 0 END)`
 
+// findByEventIDSQL repeats the partial index's WHERE clause: SQLite only
+// uses idx_events_event_id when the query provably matches it, and without
+// it every ingested event scanned the whole table (~200ms at 2.7M rows).
+const findByEventIDSQL = `SELECT ` + eventColumns + ` FROM events
+	WHERE event_id = ? AND event_id IS NOT NULL AND event_id != '' LIMIT 1`
+
 // FindByEventID looks up an already-stored event by its client-supplied
 // event_id, used to make POST /v1/events idempotent under at-least-once
 // delivery. Returns ok=false if no such event_id has been seen (or eventID
@@ -225,7 +231,7 @@ func (s *Store) FindByEventID(eventID string) (model.StoredEvent, bool, error) {
 	if eventID == "" {
 		return model.StoredEvent{}, false, nil
 	}
-	row := s.db.QueryRow(`SELECT `+eventColumns+` FROM events WHERE event_id = ? LIMIT 1`, eventID)
+	row := s.db.QueryRow(findByEventIDSQL, eventID)
 	ev, err := scanEvent(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -242,18 +248,8 @@ func (s *Store) FindByEventID(eventID string) (model.StoredEvent, bool, error) {
 //
 // Only f.Location and f.DeviceID are honoured besides the time window.
 func (s *Store) Summary(since time.Duration, f model.EventFilter) ([]model.SummaryRow, error) {
-	where, args := eventWhere(model.EventFilter{
-		DeviceID: f.DeviceID,
-		Location: f.Location,
-		Since:    time.Now().UTC().Add(-since).Format(time.RFC3339),
-	})
-
-	rows, err := s.db.Query(`
-		SELECT error_code, event_name, severity, COUNT(*) as cnt,
-		       MIN(received_at) as first_seen, MAX(received_at) as last_seen
-		FROM events`+where+`
-		GROUP BY error_code
-		ORDER BY cnt DESC`, args...)
+	q, args := summarySQL(time.Now().UTC().Add(-since), f)
+	rows, err := s.db.Query(q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query summary: %w", err)
 	}
@@ -268,6 +264,27 @@ func (s *Store) Summary(since time.Duration, f model.EventFilter) ([]model.Summa
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// summarySQL builds the Summary query. The index is pinned: left alone, the
+// planner walks idx_events_error_code to avoid a sort and reads the whole
+// table instead of just the time window (seconds once events pile up).
+func summarySQL(since time.Time, f model.EventFilter) (string, []any) {
+	where, args := eventWhere(model.EventFilter{
+		DeviceID: f.DeviceID,
+		Location: f.Location,
+		Since:    since.UTC().Format(time.RFC3339),
+	})
+	index := "idx_events_received_at"
+	if f.DeviceID != "" {
+		index = "idx_events_device_received"
+	}
+	return `
+		SELECT error_code, event_name, severity, COUNT(*) as cnt,
+		       MIN(received_at) as first_seen, MAX(received_at) as last_seen
+		FROM events INDEXED BY ` + index + where + `
+		GROUP BY error_code
+		ORDER BY cnt DESC`, args
 }
 
 func (s *Store) LoadCustomRegistry() ([]registry.Entry, error) {
