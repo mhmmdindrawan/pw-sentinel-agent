@@ -34,13 +34,18 @@ func (s *Server) Fleet(now time.Time) ([]model.FleetDevice, error) {
 	if err != nil {
 		return nil, err
 	}
-	stats, err := s.db.DeviceErrorStats(now, window)
+	all := s.devReg.All()
+	ids := make([]string, len(all))
+	for i, d := range all {
+		ids[i] = d.DeviceID
+	}
+	stats, err := s.db.DeviceErrorStats(now, window, ids)
 	if err != nil {
 		return nil, err
 	}
 
 	out := []model.FleetDevice{}
-	for _, d := range s.devReg.All() {
+	for _, d := range all {
 		st := states[d.DeviceID]
 		st.DeviceID = d.DeviceID
 		lastSeen := latest(st.LastHeartbeatAt, st.LastEventAt)

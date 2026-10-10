@@ -11,6 +11,7 @@ package alert
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"sort"
@@ -22,6 +23,10 @@ import (
 	"parkways-sentinel/agent/internal/model"
 	"parkways-sentinel/agent/internal/status"
 )
+
+// errRouteDown marks a message queued without trying, because an earlier
+// send to the same chat failed this tick.
+var errRouteDown = errors.New("not sent: an earlier message to this chat failed this round")
 
 // Sender delivers one plain-text message to one chat.
 type Sender interface {
@@ -306,18 +311,31 @@ func (a *Alerter) deliver(ctx context.Context, alerts []alert, now time.Time) er
 		}
 
 		// Retry messages that failed on earlier ticks first, oldest first.
+		// After one failure the rest wait for the next tick: while Telegram
+		// is unreachable every attempt can take the client's whole timeout,
+		// and trying each pending message would stall alerts for minutes.
 		var failed []string
+		down := false
 		for _, msg := range a.pending[r.Name] {
-			if err := a.sender.Send(ctx, r.ChatID, msg); err != nil {
+			if !down {
+				err := a.sender.Send(ctx, r.ChatID, msg)
+				if err == nil {
+					continue
+				}
 				log.Printf("alert: resend to %s failed: %v", r.Name, err)
-				failed = append(failed, msg)
+				down = true
 			}
+			failed = append(failed, msg)
 		}
 		if len(lines) > 0 {
 			msg := compose(lines, suppressed)
-			err := a.sender.Send(ctx, r.ChatID, msg)
+			err := errRouteDown
+			if !down {
+				if err = a.sender.Send(ctx, r.ChatID, msg); err != nil {
+					log.Printf("alert: send to %s failed: %v", r.Name, err)
+				}
+			}
 			if err != nil {
-				log.Printf("alert: send to %s failed: %v", r.Name, err)
 				failed = append(failed, msg)
 			}
 			// One log row per alert key, so cooldowns and the audit trail

@@ -388,8 +388,8 @@ func TestUnmappedEventsDoNotMarkDeviceAlive(t *testing.T) {
 
 func TestEventFilters(t *testing.T) {
 	e := newTestServer(t)
-	postEvent(t, e, map[string]any{"device_id": "TST-G01", "event": "PAYMENT_TIMEOUT"})    // PAY, HIGH
-	postEvent(t, e, map[string]any{"device_id": "TST-G01", "event": "APP_STARTED"})        // INFO
+	postEvent(t, e, map[string]any{"device_id": "TST-G01", "event": "PAYMENT_TIMEOUT"})     // PAY, HIGH
+	postEvent(t, e, map[string]any{"device_id": "TST-G01", "event": "APP_STARTED"})         // INFO
 	postEvent(t, e, map[string]any{"device_id": "TST-G01", "event": "READER_DISCONNECTED"}) // READER
 	e.do(http.MethodPost, "/v1/events", testToken2, map[string]any{"device_id": "TST-G02", "event": "PAYMENT_TIMEOUT"})
 
@@ -437,6 +437,17 @@ func TestRetentionPurge(t *testing.T) {
 	}
 }
 
+func TestFavicon(t *testing.T) {
+	e := newTestServer(t)
+	if rec := e.do(http.MethodGet, "/favicon.ico", "", nil); rec.Code != http.StatusMovedPermanently || rec.Header().Get("Location") != "/static/favicon.svg" {
+		t.Fatalf("/favicon.ico: %d → %q", rec.Code, rec.Header().Get("Location"))
+	}
+	rec := e.do(http.MethodGet, "/static/favicon.svg", "", nil)
+	if rec.Code != http.StatusOK || !strings.HasPrefix(rec.Header().Get("Content-Type"), "image/svg+xml") {
+		t.Fatalf("/static/favicon.svg: %d %q", rec.Code, rec.Header().Get("Content-Type"))
+	}
+}
+
 func TestDashboardServedWithSecurityHeaders(t *testing.T) {
 	e := newTestServer(t)
 	for path, want := range map[string]string{"/": "<title>Parkways Sentinel</title>", "/static/js/core/dom.js": "textContent"} {
@@ -468,5 +479,48 @@ func TestDashboardETagRevalidation(t *testing.T) {
 		if again.Code != http.StatusNotModified {
 			t.Errorf("GET %s with matching ETag: %d, want 304", path, again.Code)
 		}
+	}
+}
+
+func TestSeverityAliasesAndUnknownValues(t *testing.T) {
+	e := newTestServer(t)
+	cases := []struct {
+		sent, want string
+		hint       bool
+	}{
+		{"ERROR", "HIGH", false},     // Python logging level names
+		{"warning", "MEDIUM", false}, // any case
+		{"CRITICAL", "CRITICAL", false},
+		{"URGENT", "HIGH", true}, // unknown: PAYMENT_TIMEOUT's default, original kept
+	}
+	for i, c := range cases {
+		ev := postEvent(t, e, map[string]any{
+			"device_id": "TST-G01", "event_id": fmt.Sprintf("sev-%d", i), "event": "PAYMENT_TIMEOUT", "severity": c.sent,
+		})
+		if ev.Severity != c.want {
+			t.Errorf("severity %q stored as %q, want %q", c.sent, ev.Severity, c.want)
+		}
+		if got := ev.Context["severity_hint"]; (got != nil) != c.hint || c.hint && got != c.sent {
+			t.Errorf("severity %q: context severity_hint = %v", c.sent, got)
+		}
+	}
+
+	// A new event learned with a logging level as its default severity.
+	ev := postEvent(t, e, map[string]any{"device_id": "TST-G01", "event_id": "sev-new", "event": "LOG_APP__DEBIT", "severity": "error"})
+	if ev.Severity != "HIGH" {
+		t.Errorf("learned event severity = %q, want HIGH", ev.Severity)
+	}
+}
+
+func TestLongEventNameIsTruncated(t *testing.T) {
+	e := newTestServer(t)
+	long := strings.Repeat("É", maxEventName+50)
+	ev := postEvent(t, e, map[string]any{"device_id": "TST-G01", "event_id": "long-1", "event": long})
+	if got := []rune(ev.Event); len(got) != maxEventName {
+		t.Fatalf("stored event name has %d characters, want %d", len(got), maxEventName)
+	}
+	again := postEvent(t, e, map[string]any{"device_id": "TST-G01", "event_id": "long-2", "event": long + "-other-suffix"})
+	if again.ErrorCode != ev.ErrorCode {
+		t.Errorf("same truncated name got a second code: %s vs %s", again.ErrorCode, ev.ErrorCode)
 	}
 }

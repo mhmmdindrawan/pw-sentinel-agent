@@ -53,3 +53,22 @@ func TestGateColor(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeSeverity(t *testing.T) {
+	cases := map[string]string{
+		"HIGH": "HIGH", " medium ": "MEDIUM", "info": "INFO",
+		// Python logging level names, as a logging handler would send them.
+		"DEBUG": "INFO", "WARNING": "MEDIUM", "ERROR": "HIGH", "CRITICAL": "CRITICAL",
+		"warn": "MEDIUM", "fatal": "CRITICAL", "notice": "LOW",
+	}
+	for in, want := range cases {
+		if got, ok := NormalizeSeverity(in); !ok || got != want {
+			t.Errorf("NormalizeSeverity(%q) = %q, %v; want %q", in, got, ok, want)
+		}
+	}
+	for _, in := range []string{"", "URGENT", "HIHG", "3"} {
+		if got, ok := NormalizeSeverity(in); ok {
+			t.Errorf("NormalizeSeverity(%q) = %q, want not ok", in, got)
+		}
+	}
+}

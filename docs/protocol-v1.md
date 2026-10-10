@@ -35,9 +35,9 @@ Body fields:
 | `device_id`        | string | **yes** | Identifies the physical kiosk/gate machine. No safe default exists — a missing value would silently corrupt attribution, so this is rejected rather than defaulted. |
 | `event_id`         | string | no, but recommended | Client-generated unique id (e.g. a UUID) used for idempotent retries. If omitted, the agent generates one server-side and that particular call loses dedupe protection. |
 | `occurred_at`      | string (RFC3339) | no | Client-observed timestamp. Untrusted (client clocks can be wrong or unset). If omitted or unparseable, the agent falls back to its own receive time — never rejected for a bad client clock. |
-| `event`            | string | yes | Symbolic event name, e.g. `PAYMENT_TIMEOUT`. Unchanged from the original single-gate protocol. |
+| `event`            | string | yes | Symbolic event name, e.g. `PAYMENT_TIMEOUT`. Unchanged from the original single-gate protocol. At most 128 characters; longer names are cut to 128 (the agent learns each new name for good, so names must not contain changing values such as ids). Once a code group has used numbers 1–898, further new names share `<CODE>-899` instead of being learned. |
 | `category`         | string | no | Hint used only if `event` is not yet in the agent's registry. Either a category name (`SYSTEM`) or its code prefix (`SYS`), case-insensitive; the new event is numbered under the registry's prefix for that category (`SYSTEM` → `SYS-00N`). Missing or unknown values fall back to `APP`, and an unknown value is kept in `context.category_hint`. |
-| `severity`         | string | no | Overrides the registry's default severity for this event. |
+| `severity`         | string | no | Overrides the registry's default severity for this event: `INFO`, `LOW`, `MEDIUM`, `HIGH` or `CRITICAL`, case-insensitive. Logging level names are mapped (`DEBUG` → `INFO`, `WARNING`/`WARN` → `MEDIUM`, `ERROR` → `HIGH`, `FATAL` → `CRITICAL`). Any other value keeps the registry default and is stored in `context.severity_hint`. |
 | `message`          | string | no | Free-form human-readable detail. |
 | `device`           | string | no | The **sub-device at the gate** (e.g. `READER01`, `PRINTER01`) — unrelated to `device_id`, which identifies the kiosk machine itself. Do not confuse the two. |
 | `app_version`      | string | no | |

@@ -93,7 +93,28 @@ Setelah menambah device, restart agent (`sudo systemctl restart parkways-sentine
    sudo -u sentinel env $(sudo cat /etc/parkways-sentinel.env) ./sentinel-agent alert test
    ```
 
-## 7. systemd
+## 7. Pemantau untuk agent itu sendiri (disarankan)
+
+Alert Telegram dikirim oleh agent. Jadi kalau agent atau VPS-nya mati, tidak
+ada alert sama sekali. Untuk menutup celah ini, agent bisa melakukan "ping"
+ke layanan *dead-man's switch* setiap menit. Kalau ping berhenti, layanan itu
+yang mengirim notifikasi.
+
+1. Buat check di [healthchecks.io](https://healthchecks.io) (gratis):
+   period 1 menit, grace 5 menit. Di menu *Integrations*, hubungkan ke
+   Telegram (grup NOC atau chat pribadi).
+2. Tambahkan URL ping ke env file yang sama dengan token bot:
+   ```bash
+   echo 'SENTINEL_PING_URL=https://hc-ping.com/<uuid-check>' | sudo tee -a /etc/parkways-sentinel.env
+   ```
+3. Setelah agent jalan (langkah 8), check di healthchecks.io berubah hijau.
+   Log agent menulis `monitor: pinging https://hc-ping.com/… every 60s`.
+
+Agent hanya melakukan ping selama database-nya bisa dibaca. Gangguan dicatat
+di log sekali saat ping mulai gagal dan sekali saat pulih. Layanan lain yang
+menerima ping HTTP juga bisa dipakai, misalnya monitor "push" di Uptime Kuma.
+
+## 8. systemd
 
 ```bash
 sudo cp deploy/parkways-sentinel.service /etc/systemd/system/
@@ -105,7 +126,12 @@ journalctl -u parkways-sentinel -f
 Kalau Tailscale belum siap saat boot, bind ke IP Tailscale akan gagal.
 systemd akan mencoba lagi setiap 5 detik (`Restart=on-failure`), jadi kondisi ini tidak perlu ditangani manual.
 
-## 8. Firewall
+Log hanya memuat request yang gagal (status ≥ 400) atau lambat (≥ 2 detik),
+ditambah peringatan dan event baru yang dipelajari. Heartbeat normal tidak
+dicatat. Untuk debugging, set `server.log_requests: true` lalu restart agar
+semua request tercatat.
+
+## 9. Firewall
 
 Port 8787 hanya boleh dibuka dari Tailscale:
 
@@ -114,12 +140,13 @@ sudo ufw allow in on tailscale0 to any port 8787 proto tcp
 sudo ufw deny 8787/tcp
 ```
 
-## 9. Cek akhir
+## 10. Cek akhir
 
 - [ ] `curl http://100.64.0.1:8787/v1/health` menampilkan `"status":"ok"`, versi yang benar, dan jumlah device.
 - [ ] `curl http://<IP-publik-VPS>:8787/v1/health` **gagal**. Artinya port tidak terbuka ke internet.
 - [ ] Dashboard bisa dibuka dari laptop NOC (lewat Tailscale) dan login berhasil.
 - [ ] `alert test` sampai ke semua chat.
+- [ ] Check di healthchecks.io berstatus hijau (kalau langkah 7 dipakai).
 - [ ] Kiosk pertama berstatus ONLINE di dashboard dalam waktu 1–2 menit setelah aplikasinya berjalan.
 
 ## Operasional
@@ -134,11 +161,25 @@ sudo cp sentinel-agent-<versi>-linux-amd64 /opt/parkways-sentinel/sentinel-agent
 sudo systemctl start parkways-sentinel
 ```
 
-**Backup harian** (contoh cron untuk user `sentinel`):
+**Backup harian.** Siapkan sekali:
+
+```bash
+sudo apt install sqlite3
+sudo -u sentinel mkdir -p /opt/parkways-sentinel/backup
+sudo crontab -u sentinel -e
+```
+
+Lalu isi crontab-nya:
 
 ```
 15 2 * * * sqlite3 /opt/parkways-sentinel/data/sentinel.db ".backup /opt/parkways-sentinel/backup/sentinel-$(date +\%a).db"
+20 2 * * * tar -czf /opt/parkways-sentinel/backup/config-$(date +\%a).tar.gz -C /opt/parkways-sentinel config.yaml devices.yaml users.yaml registry.yaml
 ```
+
+`.backup` aman dijalankan selagi agent hidup. Hasilnya tujuh salinan
+bergilir, satu per hari dalam seminggu. `devices.yaml` berisi token semua
+kiosk, jadi salinan ke luar VPS harus disimpan di tempat yang aman. Kalau
+hilang, setiap kiosk harus didaftarkan ulang.
 
 **Setelah agent restart**, alert status (gate MATI) ditahan selama satu periode
 STALE (10 menit). Ini disengaja, karena semua kiosk tampak DOWN sampai

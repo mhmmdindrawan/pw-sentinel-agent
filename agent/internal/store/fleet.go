@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -74,23 +75,44 @@ func (s *Store) DeviceStates() (map[string]model.DeviceState, error) {
 	return out, rows.Err()
 }
 
-// DeviceErrorStats summarises non-INFO events per device: counts over the
-// last hour and day, the worst severity within `window`, and the latest
-// error. UNMAPPED events are excluded — they don't belong to the device
-// whose id they claim.
-func (s *Store) DeviceErrorStats(now time.Time, window time.Duration) (map[string]model.DeviceErrorStats, error) {
+// The fleet view runs these on every dashboard refresh and alerter tick, so
+// they must stay index-bound as events pile up (millions of rows after 90
+// days on a busy fleet). Left alone, the planner walked a whole index for
+// the GROUP BY and took seconds; see TestQueryPlansStayIndexed.
+const (
+	// Counts read only the last day of rows.
+	deviceStatsSQL = `
+		SELECT device_id,
+		       SUM(received_at >= ?),
+		       COUNT(*),
+		       MAX(CASE WHEN received_at >= ? THEN ` + severityRankSQL + ` ELSE 0 END)
+		FROM events INDEXED BY idx_events_received_at
+		WHERE received_at >= ? AND severity != 'INFO' AND location != 'UNMAPPED'
+		GROUP BY device_id`
+	// One newest-first index probe per device (ids as a JSON array).
+	lastErrorsSQL = `SELECT ` + eventColumns + ` FROM events WHERE id IN (
+		SELECT (SELECT e.id FROM events e
+		        WHERE e.device_id = j.value AND e.severity != 'INFO' AND e.location != 'UNMAPPED'
+		        ORDER BY e.id DESC LIMIT 1)
+		FROM json_each(?) AS j)`
+	hourlyErrorsSQL = `
+		SELECT substr(received_at, 1, 13) AS hour, COUNT(*)
+		FROM events
+		WHERE device_id = ? AND received_at >= ? AND severity != 'INFO' AND location != 'UNMAPPED'
+		GROUP BY hour`
+	countUnmappedSQL = `SELECT COUNT(*) FROM events WHERE location = 'UNMAPPED' AND received_at >= ?`
+)
+
+// DeviceErrorStats summarises non-INFO events for the given devices: counts
+// over the last hour and day, the worst severity within `window`, and the
+// latest error. UNMAPPED events are excluded — they don't belong to the
+// device whose id they claim.
+func (s *Store) DeviceErrorStats(now time.Time, window time.Duration, deviceIDs []string) (map[string]model.DeviceErrorStats, error) {
 	h1 := now.Add(-time.Hour).UTC().Format(time.RFC3339)
 	h24 := now.Add(-24 * time.Hour).UTC().Format(time.RFC3339)
 	win := now.Add(-window).UTC().Format(time.RFC3339)
 
-	rows, err := s.db.Query(`
-		SELECT device_id,
-		       SUM(received_at >= ?),
-		       COUNT(*),
-		       MAX(CASE WHEN received_at >= ? THEN `+severityRankSQL+` ELSE 0 END)
-		FROM events
-		WHERE received_at >= ? AND severity != 'INFO' AND location != 'UNMAPPED'
-		GROUP BY device_id`, h1, win, h24)
+	rows, err := s.db.Query(deviceStatsSQL, h1, win, h24)
 	if err != nil {
 		return nil, fmt.Errorf("query device error stats: %w", err)
 	}
@@ -113,10 +135,11 @@ func (s *Store) DeviceErrorStats(now time.Time, window time.Duration) (map[strin
 
 	// Latest error per device, regardless of age, so the fleet view can
 	// show "last problem was X, 3 days ago".
-	last, err := s.db.Query(`SELECT ` + eventColumns + ` FROM events WHERE id IN (
-		SELECT MAX(id) FROM events
-		WHERE severity != 'INFO' AND location != 'UNMAPPED'
-		GROUP BY device_id)`)
+	ids, err := json.Marshal(deviceIDs)
+	if err != nil {
+		return nil, err
+	}
+	last, err := s.db.Query(lastErrorsSQL, string(ids))
 	if err != nil {
 		return nil, fmt.Errorf("query last errors: %w", err)
 	}
@@ -138,11 +161,7 @@ func (s *Store) DeviceErrorStats(now time.Time, window time.Duration) (map[strin
 func (s *Store) HourlyErrors(deviceID string, now time.Time) ([]HourCount, error) {
 	now = now.UTC().Truncate(time.Hour)
 	start := now.Add(-23 * time.Hour)
-	rows, err := s.db.Query(`
-		SELECT substr(received_at, 1, 13) AS hour, COUNT(*)
-		FROM events
-		WHERE device_id = ? AND received_at >= ? AND severity != 'INFO' AND location != 'UNMAPPED'
-		GROUP BY hour`, deviceID, start.Format(time.RFC3339))
+	rows, err := s.db.Query(hourlyErrorsSQL, deviceID, start.Format(time.RFC3339))
 	if err != nil {
 		return nil, fmt.Errorf("query hourly errors: %w", err)
 	}
@@ -176,19 +195,40 @@ type HourCount struct {
 // a misconfigured kiosk the fleet view should point out.
 func (s *Store) CountUnmapped(since time.Time) (int, error) {
 	var n int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM events WHERE location = 'UNMAPPED' AND received_at >= ?`,
-		since.UTC().Format(time.RFC3339)).Scan(&n)
+	err := s.db.QueryRow(countUnmappedSQL, since.UTC().Format(time.RFC3339)).Scan(&n)
 	return n, err
 }
 
-// PurgeEventsBefore deletes events received before cutoff and returns how
-// many were removed.
+// purgeBatch bounds one DELETE, so a large purge (the first run after
+// retention was lowered, or after a long outage) never holds the write lock
+// long enough for ingest to give up waiting (busy_timeout). A var so tests
+// can make it small.
+var purgeBatch = 5000
+
+// PurgeEventsBefore deletes events received before cutoff, plus alert log
+// rows older than that, and returns how many events were removed.
 func (s *Store) PurgeEventsBefore(cutoff time.Time) (int64, error) {
-	res, err := s.db.Exec(`DELETE FROM events WHERE received_at < ?`, cutoff.UTC().Format(time.RFC3339))
-	if err != nil {
-		return 0, fmt.Errorf("purge events: %w", err)
+	c := cutoff.UTC().Format(time.RFC3339)
+	var total int64
+	for {
+		res, err := s.db.Exec(`DELETE FROM events WHERE id IN (
+			SELECT id FROM events WHERE received_at < ? ORDER BY received_at LIMIT ?)`, c, purgeBatch)
+		if err != nil {
+			return total, fmt.Errorf("purge events: %w", err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return total, err
+		}
+		total += n
+		if n < int64(purgeBatch) {
+			break
+		}
 	}
-	return res.RowsAffected()
+	if _, err := s.db.Exec(`DELETE FROM alert_log WHERE sent_at < ?`, c); err != nil {
+		return total, fmt.Errorf("purge alert log: %w", err)
+	}
+	return total, nil
 }
 
 // GetKV returns the value for key, or "" if unset.

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,6 +19,7 @@ import (
 	"parkways-sentinel/agent/internal/devices"
 	"parkways-sentinel/agent/internal/model"
 	"parkways-sentinel/agent/internal/registry"
+	"parkways-sentinel/agent/internal/status"
 	"parkways-sentinel/agent/internal/store"
 )
 
@@ -36,6 +38,9 @@ type Server struct {
 	sessions *auth.Sessions
 	mux      *http.ServeMux
 	limiter  *loginLimiter
+	// overflowed records code groups already reported as full, so the
+	// warning is logged once rather than for every event.
+	overflowed sync.Map
 
 	// Version is reported by /v1/health; set by main from build flags.
 	Version string
@@ -54,7 +59,7 @@ func New(cfg *config.Config, reg *registry.Registry, devReg *devices.Registry, d
 }
 
 func (s *Server) Handler() http.Handler {
-	return withLogging(s.mux)
+	return withLogging(s.mux, s.cfg.Server.LogRequests)
 }
 
 func (s *Server) routes() {
@@ -79,6 +84,9 @@ func (s *Server) routes() {
 // maxBatch caps POST /v1/events/batch so one request can't hold the
 // database for long.
 const maxBatch = 100
+
+// maxEventName bounds event names, which the registry keeps for good.
+const maxEventName = 128
 
 // ingestResult is the outcome of storing one event.
 type ingestResult struct {
@@ -177,6 +185,12 @@ func (s *Server) ingestOne(deviceEntry devices.Entry, in model.IncomingEvent) in
 	if strings.TrimSpace(in.Event) == "" {
 		return ingestResult{Status: http.StatusBadRequest, Err: "field 'event' is required"}
 	}
+	if r := []rune(in.Event); len(r) > maxEventName {
+		// Names become registry keys kept for good; a longer one is an app
+		// bug, but the event itself is still worth keeping.
+		log.Printf("warning: event name from device %q is %d characters; keeping the first %d", in.DeviceID, len(r), maxEventName)
+		in.Event = string(r[:maxEventName])
+	}
 	if strings.TrimSpace(in.DeviceID) == "" {
 		return ingestResult{Status: http.StatusBadRequest, Err: "field 'device_id' is required"}
 	}
@@ -224,17 +238,36 @@ func (s *Server) ingestOne(deviceEntry devices.Entry, in model.IncomingEvent) in
 			}
 			category, code = "APP", "APP"
 		}
-		entry = s.reg.Allocate(in.Event, category, code, in.Severity)
-		if err := s.db.SaveCustomRegistryEntry(entry); err != nil {
-			log.Printf("warning: failed to persist learned event %q: %v", in.Event, err)
-		} else {
-			log.Printf("learned new event %q -> %s-%s-%s-%03d", in.Event, location, gate, entry.Code, entry.Number)
+		var isNew bool
+		entry, isNew = s.reg.Allocate(in.Event, category, code, in.Severity)
+		switch {
+		case isNew:
+			if err := s.db.SaveCustomRegistryEntry(entry); err != nil {
+				log.Printf("warning: failed to persist learned event %q: %v", in.Event, err)
+			} else {
+				log.Printf("learned new event %q -> %s-%s-%s-%03d", in.Event, location, gate, entry.Code, entry.Number)
+			}
+		case entry.Number == registry.OverflowNumber:
+			if _, seen := s.overflowed.LoadOrStore(entry.Code, true); !seen {
+				log.Printf("warning: %s has no free numbers left; new event names (e.g. %q) now share %s-%03d — check the app for event names built from changing values",
+					entry.Code, in.Event, entry.Code, entry.Number)
+			}
 		}
 	}
 
 	severity := entry.Severity
 	if strings.TrimSpace(in.Severity) != "" {
-		severity = strings.ToUpper(in.Severity)
+		if sev, ok := status.NormalizeSeverity(in.Severity); ok {
+			severity = sev
+		} else {
+			// Unknown values would rank below INFO: the event would never
+			// colour a gate, match a filter or alert. Keep the default.
+			log.Printf("warning: event %q from device %q has unknown severity %q; using %s", in.Event, in.DeviceID, in.Severity, severity)
+			if in.Context == nil {
+				in.Context = map[string]any{}
+			}
+			in.Context["severity_hint"] = in.Severity
+		}
 	}
 
 	appVersion := in.AppVersion
@@ -352,10 +385,32 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
-func withLogging(next http.Handler) http.Handler {
+// slowRequest is logged even when request logging is off.
+const slowRequest = 2 * time.Second
+
+// withLogging logs failed and slow requests, or every request when all is
+// set. Every kiosk heartbeats each minute, so logging all of them by default
+// would bury the warnings that matter.
+func withLogging(next http.Handler, all bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		next.ServeHTTP(w, r)
-		log.Printf("%s %s %s", r.Method, r.URL.Path, time.Since(start))
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+		if took := time.Since(start); all || rec.status >= 400 || took >= slowRequest {
+			log.Printf("%s %s %d %s %s", r.Method, r.URL.Path, rec.status, took.Round(time.Millisecond), remoteIP(r))
+		}
 	})
 }
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
+// Unwrap lets http.ResponseController reach the underlying writer.
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }

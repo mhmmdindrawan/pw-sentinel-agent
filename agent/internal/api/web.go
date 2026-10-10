@@ -24,6 +24,8 @@ func (s *Server) webRoutes() {
 	s.mux.Handle("GET /{$}", withWebHeaders(etags, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.ServeFileFS(w, r, static, "index.html")
 	})))
+	// Browsers and tools still probe /favicon.ico despite the <link>.
+	s.mux.Handle("GET /favicon.ico", http.RedirectHandler("/static/favicon.svg", http.StatusMovedPermanently))
 }
 
 // hashFiles computes a strong ETag per embedded file once at startup.
