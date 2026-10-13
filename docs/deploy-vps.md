@@ -128,6 +128,14 @@ itu selama waktu yang diminta Telegram (`retry_after`). Pesan yang tertunda
 dikirim sesudahnya sesuai urutan. Log agent menulis
 `telegram: rate limited, retry after …`.
 
+**Telegram tidak bisa dihubungi.** Alert yang gagal dikirim disimpan di
+database agent, paling banyak 20 pesan per rute. Antrean ini tetap ada
+walaupun agent di-restart. Setelah Telegram pulih, pesan dikirim sesuai
+urutan. Pesan yang terlambat lebih dari 2 menit diberi keterangan
+`(terlambat terkirim; dibuat 10:05 WIB)`. Pesan yang tertahan lebih dari
+24 jam dibuang dan dicatat di log, karena dashboard sudah menampilkan
+kondisi terbaru.
+
 ## 7. Pemantau untuk agent itu sendiri (disarankan)
 
 Alert Telegram dikirim oleh agent. Jadi kalau agent atau VPS-nya mati, tidak

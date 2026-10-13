@@ -369,6 +369,58 @@ func TestRateLimitIsHonoured(t *testing.T) {
 	}
 }
 
+func TestUndeliveredSurvivesRestart(t *testing.T) {
+	e := newEnv(t)
+	e.tick(time.Second)
+	e.event("STI-G03-POS01", "STI", "G03", "READER_NOT_READY", "STI-G03-READER-003", "HIGH")
+	e.sender.fail = true
+	e.tick(30 * time.Second)
+
+	e.restart()
+	e.sender.fail = false
+	e.tick(time.Minute) // 90s after it was written: not late yet
+	got := e.sender.to("noc-chat")
+	if len(got) != 1 || !strings.Contains(got[0], "READER_NOT_READY") {
+		t.Fatalf("after restart noc got %q", got)
+	}
+	if strings.Contains(got[0], "terlambat") {
+		t.Errorf("marked late after 90s: %q", got[0])
+	}
+
+	// Delivered: nothing left to resend after another restart.
+	e.restart()
+	e.tick(30 * time.Second)
+	if n := len(e.sender.to("noc-chat")); n != 1 {
+		t.Fatalf("delivered message resent after restart: %d messages", n)
+	}
+}
+
+func TestLateAndExpiredMessages(t *testing.T) {
+	e := newEnv(t)
+	e.tick(time.Second)
+	e.event("STI-G03-POS01", "STI", "G03", "READER_NOT_READY", "STI-G03-READER-003", "HIGH")
+	e.sender.fail = true
+	e.tick(30 * time.Second) // written 12:00:31 WIB
+	e.tick(10 * time.Minute)
+	e.sender.fail = false
+	e.tick(30 * time.Second)
+	got := e.sender.to("noc-chat")
+	if len(got) != 1 || !strings.Contains(got[0], "(terlambat terkirim; dibuat ") || !strings.Contains(got[0], "12:00 WIB)") {
+		t.Fatalf("late message: %q", got)
+	}
+
+	e.event("STI-G03-POS01", "STI", "G03", "MQTT_CONNECT_FAILED", "STI-G03-MQTT-002", "HIGH")
+	e.sender.fail = true
+	e.tick(30 * time.Second)
+	e.restart()
+	e.tick(maxPendingAge + time.Minute)
+	e.sender.fail = false
+	e.tick(30 * time.Second)
+	if n := len(e.sender.to("noc-chat")); n != 1 {
+		t.Fatalf("message older than %s still sent: %q", maxPendingAge, e.sender.to("noc-chat"))
+	}
+}
+
 func TestRouteThreadID(t *testing.T) {
 	e := newEnv(t)
 	e.setDevice("LBI-G01-POS01", "LBI", "G01", "ONLINE", 0)
