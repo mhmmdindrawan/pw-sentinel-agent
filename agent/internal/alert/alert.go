@@ -53,6 +53,7 @@ type FleetFunc func(now time.Time) ([]model.FleetDevice, error)
 const (
 	kvLastEvent = "alert:last_event_id"
 	kvStatuses  = "alert:statuses"
+	kvPending   = "alert:pending"
 	// Cap per tick so a burst (or a long-offline agent catching up) can't
 	// stall the loop; the rest is picked up next tick.
 	maxEventsPerTick = 500
@@ -60,14 +61,24 @@ const (
 	maxMessageLen = 3900
 	// Lines per message before the rest is summarised as "+N more".
 	maxLinesPerMessage = 12
-	// Undelivered messages kept per route for retry.
+	// Undelivered messages kept per route for retry, and for how long.
 	maxPendingPerRoute = 20
+	maxPendingAge      = 24 * time.Hour
+	// A message delivered this late says when it was written.
+	lateAfter = 2 * time.Minute
 	// Telegram allows about 20 messages a minute into one group. Stay under
 	// that, and spread a backlog (after Telegram was unreachable) over
 	// several ticks instead of bursting it into the chat.
 	maxSendsPerChatPerMinute = 15
 	maxSendsPerChatPerTick   = 3
 )
+
+// pendingMsg is a message waiting for Telegram. The queue is kept in the
+// database so an agent restart during a Telegram outage loses nothing.
+type pendingMsg struct {
+	Text string    `json:"text"`
+	At   time.Time `json:"at"`
+}
 
 type Alerter struct {
 	cfg       config.Alert
@@ -80,7 +91,7 @@ type Alerter struct {
 	// restart every kiosk looks DOWN until its next heartbeat arrives.
 	grace   time.Duration
 	started time.Time
-	pending map[string][]string // route name -> messages that failed to send
+	pending map[string][]pendingMsg // route name -> messages not delivered yet
 	// Keyed by chat id, not route: Telegram's limits are per chat, and
 	// several routes can post into topics of the same group.
 	holdUntil map[string]time.Time   // no sends before this (after HTTP 429)
@@ -103,11 +114,43 @@ func New(cfg config.Alert, publicURL string, grace time.Duration, fleet FleetFun
 			return nil, fmt.Errorf("alert route %q: invalid thread_id %d", r.Name, r.ThreadID)
 		}
 	}
-	return &Alerter{
+	a := &Alerter{
 		cfg: cfg, publicURL: strings.TrimRight(publicURL, "/"), fleet: fleet, store: store, sender: sender,
-		loc: loc, grace: grace, started: now, pending: map[string][]string{},
+		loc: loc, grace: grace, started: now, pending: map[string][]pendingMsg{},
 		holdUntil: map[string]time.Time{}, recent: map[string][]time.Time{},
-	}, nil
+	}
+	if err := a.loadPending(); err != nil {
+		return nil, err
+	}
+	return a, nil
+}
+
+// loadPending restores the undelivered queue from before a restart. Routes
+// no longer in the config are dropped: their chat may be gone.
+func (a *Alerter) loadPending() error {
+	raw, err := a.store.GetKV(kvPending)
+	if err != nil || raw == "" {
+		return err
+	}
+	saved := map[string][]pendingMsg{}
+	if err := json.Unmarshal([]byte(raw), &saved); err != nil {
+		log.Printf("alert: discarding unreadable undelivered queue: %v", err)
+		return nil
+	}
+	for _, r := range a.cfg.Routes {
+		if len(saved[r.Name]) > 0 {
+			a.pending[r.Name] = saved[r.Name]
+		}
+	}
+	return nil
+}
+
+func (a *Alerter) savePending() error {
+	b, err := json.Marshal(a.pending)
+	if err != nil {
+		return err
+	}
+	return a.store.SetKV(kvPending, string(b))
 }
 
 // Run ticks until ctx is cancelled.
@@ -301,6 +344,7 @@ func (a *Alerter) minSeverity() string {
 func (a *Alerter) deliver(ctx context.Context, alerts []alert, now time.Time) error {
 	cooldown := time.Duration(a.cfg.CooldownMinutes) * time.Minute
 	sentThisTick := map[string]int{}
+	dirty := false // the undelivered queue changed and must be saved
 	for chat, times := range a.recent {
 		kept := times[:0]
 		for _, t := range times {
@@ -361,7 +405,6 @@ func (a *Alerter) deliver(ctx context.Context, alerts []alert, now time.Time) er
 		// and trying each pending message would stall alerts for minutes.
 		// A message held for the rate limit keeps everything after it held
 		// too (the limits only tighten within a tick), so order is kept.
-		var failed []string
 		var downErr error
 		trySend := func(msg, what string) error {
 			if downErr != nil {
@@ -374,16 +417,29 @@ func (a *Alerter) deliver(ctx context.Context, alerts []alert, now time.Time) er
 			}
 			return err
 		}
-		for _, msg := range a.pending[r.Name] {
-			if trySend(msg, "resend") != nil {
-				failed = append(failed, msg)
+		var failed []pendingMsg
+		old := 0
+		for _, p := range a.pending[r.Name] {
+			if now.Sub(p.At) > maxPendingAge {
+				old++
+				continue
 			}
+			text := p.Text
+			if now.Sub(p.At) >= lateAfter {
+				text += "\n(terlambat terkirim; dibuat " + a.clock(p.At.Format(time.RFC3339)) + ")"
+			}
+			if trySend(text, "resend") != nil {
+				failed = append(failed, p)
+			}
+		}
+		if old > 0 {
+			log.Printf("alert: dropped %d message(s) to %s undelivered for over %s", old, r.Name, maxPendingAge)
 		}
 		if len(lines) > 0 {
 			msg := compose(lines, suppressed)
 			err := trySend(msg, "send")
 			if err != nil {
-				failed = append(failed, msg)
+				failed = append(failed, pendingMsg{Text: msg, At: now})
 			}
 			// One log row per alert key, so cooldowns and the audit trail
 			// work per device + code even though the message is combined.
@@ -396,7 +452,17 @@ func (a *Alerter) deliver(ctx context.Context, alerts []alert, now time.Time) er
 		if len(failed) > maxPendingPerRoute {
 			failed = failed[len(failed)-maxPendingPerRoute:]
 		}
-		a.pending[r.Name] = failed
+		if len(failed) > 0 || len(a.pending[r.Name]) > 0 {
+			dirty = true
+		}
+		if len(failed) > 0 {
+			a.pending[r.Name] = failed
+		} else {
+			delete(a.pending, r.Name)
+		}
+	}
+	if dirty {
+		return a.savePending()
 	}
 	return nil
 }
