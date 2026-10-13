@@ -16,20 +16,30 @@ import (
 	"parkways-sentinel/agent/internal/store"
 )
 
-type sent struct{ chat, text string }
+type sent struct {
+	chat   string
+	thread int
+	text   string
+}
 
 type fakeSender struct {
 	msgs     []sent
 	fail     bool
 	attempts int
+	// chat id -> answer the next send to it with HTTP 429 and this wait
+	limit map[string]time.Duration
 }
 
-func (f *fakeSender) Send(_ context.Context, chat, text string) error {
+func (f *fakeSender) Send(_ context.Context, to Destination, text string) error {
 	f.attempts++
 	if f.fail {
 		return errors.New("network down")
 	}
-	f.msgs = append(f.msgs, sent{chat, text})
+	if d, ok := f.limit[to.ChatID]; ok {
+		delete(f.limit, to.ChatID)
+		return &RateLimitError{RetryAfter: d}
+	}
+	f.msgs = append(f.msgs, sent{to.ChatID, to.ThreadID, text})
 	return nil
 }
 
@@ -58,7 +68,7 @@ var testCfg = config.Alert{
 	Routes: []config.AlertRoute{
 		{Name: "noc", ChatID: "noc-chat", MinSeverity: "HIGH"},
 		{Name: "pribadi", ChatID: "me-chat", MinSeverity: "MEDIUM"},
-		{Name: "lbi", ChatID: "lbi-chat", MinSeverity: "HIGH", Locations: []string{"LBI"}},
+		{Name: "lbi", ChatID: "lbi-chat", ThreadID: 7, MinSeverity: "HIGH", Locations: []string{"LBI"}},
 	},
 }
 
@@ -269,6 +279,10 @@ func TestUnreachableTelegramIsTriedOncePerTick(t *testing.T) {
 	}
 	e.sender.fail = false
 	e.tick(30 * time.Second)
+	if got := len(e.sender.to("noc-chat")); got != maxSendsPerChatPerTick {
+		t.Fatalf("first tick after recovery sent %d to noc, want %d (backlog is paced)", got, maxSendsPerChatPerTick)
+	}
+	e.tick(30 * time.Second)
 	got := e.sender.to("noc-chat")
 	if len(got) != 5 {
 		t.Fatalf("after recovery noc got %d messages, want all 5", len(got))
@@ -277,6 +291,145 @@ func TestUnreachableTelegramIsTriedOncePerTick(t *testing.T) {
 		if !strings.Contains(msg, fmt.Sprintf("EV_%d", i)) {
 			t.Errorf("message %d out of order: %q", i, msg)
 		}
+	}
+}
+
+// queueBacklog leaves n undelivered messages per route while Telegram is
+// unreachable, one HIGH event per tick.
+func (e *env) queueBacklog(n int) {
+	e.sender.fail = true
+	for i := 0; i < n; i++ {
+		e.event("STI-G03-POS01", "STI", "G03", fmt.Sprintf("EV_%d", i), fmt.Sprintf("STI-G03-APP-%03d", i+10), "HIGH")
+		e.tick(30 * time.Second)
+	}
+	e.sender.fail = false
+}
+
+func TestBacklogDrainStaysUnderGroupLimit(t *testing.T) {
+	e := newEnv(t)
+	e.tick(time.Second)
+	e.queueBacklog(maxPendingPerRoute)
+
+	// Tick far faster than configured: the per-minute limit must still hold.
+	var at []time.Time
+	for i := 0; i < 60 && len(at) < maxPendingPerRoute; i++ {
+		before := len(e.sender.to("noc-chat"))
+		e.tick(5 * time.Second)
+		for n := len(e.sender.to("noc-chat")); n > before; n-- {
+			at = append(at, e.now)
+		}
+	}
+	if len(at) != maxPendingPerRoute {
+		t.Fatalf("delivered %d of %d", len(at), maxPendingPerRoute)
+	}
+	for i := range at {
+		n := 0
+		for _, u := range at[i:] {
+			if u.Sub(at[i]) < time.Minute {
+				n++
+			}
+		}
+		if n > maxSendsPerChatPerMinute {
+			t.Fatalf("%d messages within a minute from %s, limit %d", n, at[i].Format("15:04:05"), maxSendsPerChatPerMinute)
+		}
+	}
+	got := e.sender.to("noc-chat")
+	for i, msg := range got {
+		if !strings.Contains(msg, fmt.Sprintf("EV_%d ", i)) {
+			t.Errorf("message %d out of order: %q", i, msg)
+		}
+	}
+}
+
+func TestRateLimitIsHonoured(t *testing.T) {
+	e := newEnv(t)
+	e.tick(time.Second)
+	e.event("STI-G03-POS01", "STI", "G03", "READER_NOT_READY", "STI-G03-READER-003", "HIGH")
+	e.sender.limit = map[string]time.Duration{"noc-chat": 75 * time.Second}
+	e.tick(30 * time.Second)
+	if got := e.sender.to("me-chat"); len(got) != 1 {
+		t.Fatalf("other chat held back by noc's limit: %q", got)
+	}
+
+	e.event("STI-G03-POS01", "STI", "G03", "MQTT_CONNECT_FAILED", "STI-G03-MQTT-002", "HIGH")
+	before := e.sender.attempts
+	e.tick(30 * time.Second) // 30s into a 75s wait
+	if got := e.sender.attempts - before; got != 1 {
+		t.Fatalf("%d send attempts during the wait, want 1 (me-chat only)", got)
+	}
+
+	e.tick(30 * time.Second) // 60s: still waiting
+	if got := e.sender.to("noc-chat"); len(got) != 0 {
+		t.Fatalf("sent during retry_after: %q", got)
+	}
+	e.tick(30 * time.Second) // 90s: wait over, both go out in order
+	got := e.sender.to("noc-chat")
+	if len(got) != 2 || !strings.Contains(got[0], "READER_NOT_READY") || !strings.Contains(got[1], "MQTT_CONNECT_FAILED") {
+		t.Fatalf("after wait: %q", got)
+	}
+}
+
+func TestRouteThreadID(t *testing.T) {
+	e := newEnv(t)
+	e.setDevice("LBI-G01-POS01", "LBI", "G01", "ONLINE", 0)
+	e.tick(time.Second)
+	e.event("LBI-G01-POS01", "LBI", "G01", "READER_NOT_READY", "LBI-G01-READER-003", "HIGH")
+	e.tick(30 * time.Second)
+	for _, m := range e.sender.msgs {
+		want := 0
+		if m.chat == "lbi-chat" {
+			want = 7
+		}
+		if m.thread != want {
+			t.Errorf("%s: thread %d, want %d", m.chat, m.thread, want)
+		}
+	}
+	if len(e.sender.to("lbi-chat")) != 1 {
+		t.Fatalf("lbi got %v", e.sender.msgs)
+	}
+
+	bad := testCfg
+	bad.Routes = []config.AlertRoute{{Name: "x", ChatID: "c", MinSeverity: "HIGH", ThreadID: -1}}
+	if _, err := New(bad, "", grace, e.fleetFunc, e.db, e.sender, e.now); err == nil {
+		t.Error("negative thread_id accepted")
+	}
+}
+
+func TestTelegramErrors(t *testing.T) {
+	var reply string
+	var status int
+	var gotThread string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.ParseForm()
+		gotThread = r.Form.Get("message_thread_id")
+		w.WriteHeader(status)
+		w.Write([]byte(reply))
+	}))
+	defer srv.Close()
+	tg := NewTelegram("123:SECRET")
+	tg.BaseURL = srv.URL
+
+	status, reply = 429, `{"ok":false,"error_code":429,"description":"Too Many Requests: retry after 35","parameters":{"retry_after":35}}`
+	err := tg.Send(context.Background(), Destination{ChatID: "-100", ThreadID: 12}, "x")
+	var rl *RateLimitError
+	if !errors.As(err, &rl) || rl.RetryAfter != 35*time.Second {
+		t.Fatalf("429: err = %v", err)
+	}
+	if gotThread != "12" {
+		t.Errorf("message_thread_id = %q, want 12", gotThread)
+	}
+
+	status, reply = 429, `{"ok":false}`
+	if err := tg.Send(context.Background(), Destination{ChatID: "-100"}, "x"); !errors.As(err, &rl) || rl.RetryAfter <= 0 {
+		t.Fatalf("429 without retry_after: err = %v", err)
+	}
+	if gotThread != "" {
+		t.Errorf("message_thread_id sent for thread 0: %q", gotThread)
+	}
+
+	status, reply = 400, `{"ok":false,"error_code":400,"description":"Bad Request: group chat was upgraded to a supergroup chat","parameters":{"migrate_to_chat_id":-1001234567890}}`
+	if err := tg.Send(context.Background(), Destination{ChatID: "-4321"}, "x"); err == nil || !strings.Contains(err.Error(), "-1001234567890") {
+		t.Fatalf("migrate: err = %v", err)
 	}
 }
 
@@ -290,7 +443,7 @@ func TestTelegramSender(t *testing.T) {
 	defer srv.Close()
 	tg := NewTelegram("123:SECRET")
 	tg.BaseURL = srv.URL
-	if err := tg.Send(context.Background(), "-100", "<b>halo</b>"); err != nil {
+	if err := tg.Send(context.Background(), Destination{ChatID: "-100"}, "<b>halo</b>"); err != nil {
 		t.Fatal(err)
 	}
 	if gotPath != "/bot123:SECRET/sendMessage" || gotChat != "-100" || gotText != "<b>halo</b>" || gotMode != "" {
@@ -298,7 +451,7 @@ func TestTelegramSender(t *testing.T) {
 	}
 
 	srv.Close() // now unreachable: the error must not leak the token
-	if err := tg.Send(context.Background(), "-100", "x"); err == nil || strings.Contains(err.Error(), "SECRET") {
+	if err := tg.Send(context.Background(), Destination{ChatID: "-100"}, "x"); err == nil || strings.Contains(err.Error(), "SECRET") {
 		t.Fatalf("error = %v", err)
 	}
 }

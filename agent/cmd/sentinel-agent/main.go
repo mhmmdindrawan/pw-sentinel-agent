@@ -352,7 +352,7 @@ func runAlert(args []string) int {
 	failed := 0
 	for _, r := range cfg.Alert.Routes {
 		msg := fmt.Sprintf("✅ Tes notifikasi Parkways Sentinel (%s)\nRute: %s · min severity %s\nDikirim dari %s.", version, r.Name, r.MinSeverity, host)
-		if err := tg.Send(context.Background(), r.ChatID, msg); err != nil {
+		if err := tg.Send(context.Background(), alert.Destination{ChatID: r.ChatID, ThreadID: r.ThreadID}, msg); err != nil {
 			fmt.Printf("%-12s GAGAL: %v\n", r.Name, err)
 			failed++
 		} else {

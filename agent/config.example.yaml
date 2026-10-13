@@ -42,6 +42,7 @@ alert:
   routes:
     # - name: noc
     #   chat_id: "-1001234567890"
+    #   thread_id: 12             # optional: forum topic in a group with Topics on
     #   min_severity: HIGH
     #   locations: [STI]
     # - name: pribadi
