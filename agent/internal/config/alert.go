@@ -23,8 +23,11 @@ type Alert struct {
 
 // AlertRoute sends a filtered subset of alerts to one Telegram chat.
 type AlertRoute struct {
-	Name        string `yaml:"name"`
-	ChatID      string `yaml:"chat_id"`
+	Name   string `yaml:"name"`
+	ChatID string `yaml:"chat_id"`
+	// Forum topic (message_thread_id) in a supergroup with Topics on; 0 or
+	// unset posts to the group itself (its General topic).
+	ThreadID    int    `yaml:"thread_id"`
 	MinSeverity string `yaml:"min_severity"` // INFO, LOW, MEDIUM, HIGH, CRITICAL
 	// Empty means every location.
 	Locations []string `yaml:"locations"`

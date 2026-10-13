@@ -28,9 +28,13 @@ import (
 // send to the same chat failed this tick.
 var errRouteDown = errors.New("not sent: an earlier message to this chat failed this round")
 
+// errChatBusy marks a message held back to stay within Telegram's rate
+// limits; it goes out on a later tick.
+var errChatBusy = errors.New("not sent yet: holding back for Telegram's rate limit")
+
 // Sender delivers one plain-text message to one chat.
 type Sender interface {
-	Send(ctx context.Context, chatID, text string) error
+	Send(ctx context.Context, to Destination, text string) error
 }
 
 // Store is the slice of the agent database the alerter uses.
@@ -58,6 +62,11 @@ const (
 	maxLinesPerMessage = 12
 	// Undelivered messages kept per route for retry.
 	maxPendingPerRoute = 20
+	// Telegram allows about 20 messages a minute into one group. Stay under
+	// that, and spread a backlog (after Telegram was unreachable) over
+	// several ticks instead of bursting it into the chat.
+	maxSendsPerChatPerMinute = 15
+	maxSendsPerChatPerTick   = 3
 )
 
 type Alerter struct {
@@ -72,6 +81,10 @@ type Alerter struct {
 	grace   time.Duration
 	started time.Time
 	pending map[string][]string // route name -> messages that failed to send
+	// Keyed by chat id, not route: Telegram's limits are per chat, and
+	// several routes can post into topics of the same group.
+	holdUntil map[string]time.Time   // no sends before this (after HTTP 429)
+	recent    map[string][]time.Time // successful sends in the last minute
 }
 
 func New(cfg config.Alert, publicURL string, grace time.Duration, fleet FleetFunc, store Store, sender Sender, now time.Time) (*Alerter, error) {
@@ -86,10 +99,14 @@ func New(cfg config.Alert, publicURL string, grace time.Duration, fleet FleetFun
 		if status.SeverityRank(r.MinSeverity) == 0 {
 			return nil, fmt.Errorf("alert route %q: invalid min_severity %q", r.Name, r.MinSeverity)
 		}
+		if r.ThreadID < 0 {
+			return nil, fmt.Errorf("alert route %q: invalid thread_id %d", r.Name, r.ThreadID)
+		}
 	}
 	return &Alerter{
 		cfg: cfg, publicURL: strings.TrimRight(publicURL, "/"), fleet: fleet, store: store, sender: sender,
 		loc: loc, grace: grace, started: now, pending: map[string][]string{},
+		holdUntil: map[string]time.Time{}, recent: map[string][]time.Time{},
 	}, nil
 }
 
@@ -283,6 +300,34 @@ func (a *Alerter) minSeverity() string {
 
 func (a *Alerter) deliver(ctx context.Context, alerts []alert, now time.Time) error {
 	cooldown := time.Duration(a.cfg.CooldownMinutes) * time.Minute
+	sentThisTick := map[string]int{}
+	for chat, times := range a.recent {
+		kept := times[:0]
+		for _, t := range times {
+			if now.Sub(t) < time.Minute {
+				kept = append(kept, t)
+			}
+		}
+		a.recent[chat] = kept
+	}
+	send := func(r config.AlertRoute, msg string) error {
+		chat := r.ChatID
+		if now.Before(a.holdUntil[chat]) || sentThisTick[chat] >= maxSendsPerChatPerTick ||
+			len(a.recent[chat]) >= maxSendsPerChatPerMinute {
+			return errChatBusy
+		}
+		err := a.sender.Send(ctx, Destination{ChatID: chat, ThreadID: r.ThreadID}, msg)
+		var rl *RateLimitError
+		if errors.As(err, &rl) {
+			a.holdUntil[chat] = now.Add(rl.RetryAfter)
+		}
+		if err == nil {
+			sentThisTick[chat]++
+			a.recent[chat] = append(a.recent[chat], now)
+		}
+		return err
+	}
+
 	for _, r := range a.cfg.Routes {
 		var lines, keys []string
 		seen := map[string]bool{}
@@ -314,27 +359,29 @@ func (a *Alerter) deliver(ctx context.Context, alerts []alert, now time.Time) er
 		// After one failure the rest wait for the next tick: while Telegram
 		// is unreachable every attempt can take the client's whole timeout,
 		// and trying each pending message would stall alerts for minutes.
+		// A message held for the rate limit keeps everything after it held
+		// too (the limits only tighten within a tick), so order is kept.
 		var failed []string
-		down := false
-		for _, msg := range a.pending[r.Name] {
-			if !down {
-				err := a.sender.Send(ctx, r.ChatID, msg)
-				if err == nil {
-					continue
-				}
-				log.Printf("alert: resend to %s failed: %v", r.Name, err)
-				down = true
+		var downErr error
+		trySend := func(msg, what string) error {
+			if downErr != nil {
+				return downErr
 			}
-			failed = append(failed, msg)
+			err := send(r, msg)
+			if err != nil && !errors.Is(err, errChatBusy) {
+				log.Printf("alert: %s to %s failed: %v", what, r.Name, err)
+				downErr = errRouteDown
+			}
+			return err
+		}
+		for _, msg := range a.pending[r.Name] {
+			if trySend(msg, "resend") != nil {
+				failed = append(failed, msg)
+			}
 		}
 		if len(lines) > 0 {
 			msg := compose(lines, suppressed)
-			err := errRouteDown
-			if !down {
-				if err = a.sender.Send(ctx, r.ChatID, msg); err != nil {
-					log.Printf("alert: send to %s failed: %v", r.Name, err)
-				}
-			}
+			err := trySend(msg, "send")
 			if err != nil {
 				failed = append(failed, msg)
 			}

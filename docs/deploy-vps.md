@@ -93,6 +93,41 @@ Setelah menambah device, restart agent (`sudo systemctl restart parkways-sentine
    sudo -u sentinel env $(sudo cat /etc/parkways-sentinel.env) ./sentinel-agent alert test
    ```
 
+**Topic per lokasi (opsional).** Kalau grup NOC memakai *Topics*, setiap
+lokasi bisa punya topic sendiri. Buat satu rute per topic dengan `chat_id`
+yang sama dan isi `thread_id`:
+
+```yaml
+    routes:
+      - name: noc-sti
+        chat_id: "-1001234567890"
+        thread_id: 12              # topic "STI"
+        min_severity: HIGH
+        locations: [STI]
+      - name: noc-lbi
+        chat_id: "-1001234567890"
+        thread_id: 15              # topic "LBI"
+        min_severity: HIGH
+        locations: [LBI]
+```
+
+Untuk mendapatkan `thread_id`, klik kanan topic lalu pilih *Copy Link*.
+Hasilnya `https://t.me/c/1234567890/12`, dan angka terakhir (`12`) adalah
+`thread_id`. Tanpa `thread_id`, pesan masuk ke topic *General*.
+
+Mengaktifkan Topics mengubah grup biasa menjadi supergroup dengan chat ID
+baru (diawali `-100…`). Chat ID lama berhenti berfungsi. Log agent dan
+`alert test` akan menampilkan `became a supergroup, set chat_id to -100…`.
+Salin ID baru itu ke `config.yaml`, lalu restart agent.
+
+**Batas kirim Telegram.** Telegram mengizinkan sekitar 20 pesan per menit
+ke satu grup. Agent menggabungkan alert dalam satu putaran menjadi satu
+pesan dan mengirim paling banyak 15 pesan per menit ke satu chat. Kalau
+Telegram tetap membalas "Too Many Requests", agent berhenti mengirim ke chat
+itu selama waktu yang diminta Telegram (`retry_after`). Pesan yang tertunda
+dikirim sesudahnya sesuai urutan. Log agent menulis
+`telegram: rate limited, retry after …`.
+
 ## 7. Pemantau untuk agent itu sendiri (disarankan)
 
 Alert Telegram dikirim oleh agent. Jadi kalau agent atau VPS-nya mati, tidak
