@@ -31,7 +31,12 @@ What's in this repo:
 - **`docs/`** — [wire protocol](docs/protocol-v1.md),
   [VPS deployment runbook](docs/deploy-vps.md),
   [kiosk integration guide](docs/integrasi-kiosk.md),
+  [field cases → detection → test matrix](docs/kasus-lapangan.md) (the backlog's source of truth),
   [AI-assisted debugging plan](docs/rencana-ai-debugging.md) (not built yet).
+- **`.github/workflows/`** — CI on every push/PR (vet, race tests, Python
+  3.6/3.10/3.12, cross-compile, dashboard E2E) and a release job: pushing a
+  `v*` tag publishes binaries + `SHA256SUMS` as a GitHub Release
+  ([changelog](CHANGELOG.md)). Deploy from releases, not local builds.
 
 Not built yet: incident correlation, AI analyzer and chat, per-site agents
 syncing to a central one.

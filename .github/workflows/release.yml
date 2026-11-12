@@ -1,0 +1,50 @@
+name: Release
+
+# Pushing a tag like v0.3.0 builds every target from that exact commit and
+# publishes the binaries + checksums as a GitHub release. Deploy only from
+# these artifacts, never from a laptop build (which may be `-dirty`).
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: agent/go.mod
+          cache-dependency-path: agent/go.sum
+
+      - name: Tests must pass on the tagged commit
+        working-directory: agent
+        run: go vet ./... && go test -race -count=1 ./...
+
+      - name: Build
+        run: |
+          deploy/build.sh "$GITHUB_REF_NAME"
+          cd dist && sha256sum sentinel-agent-* > SHA256SUMS
+          ./sentinel-agent-"$GITHUB_REF_NAME"-linux-amd64 version
+
+      - name: Release notes from CHANGELOG.md
+        run: |
+          # Section for this tag: from "## [vX.Y.Z]" up to the next "## [".
+          awk -v tag="$GITHUB_REF_NAME" '
+            /^## \[/ { on = index($0, "[" tag "]") > 0; if (!on) next }
+            on { print }' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            echo "::error::CHANGELOG.md has no section '## [$GITHUB_REF_NAME]'"; exit 1
+          fi
+          cat notes.md
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/sentinel-agent-* dist/SHA256SUMS \
+            --title "$GITHUB_REF_NAME" --notes-file notes.md --verify-tag
