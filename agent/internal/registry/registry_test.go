@@ -177,3 +177,45 @@ func TestShippedRegistryLoads(t *testing.T) {
 		t.Errorf("PAYMENT_TIMEOUT = %+v, want PAY-002 HIGH", e)
 	}
 }
+
+func TestReconcileLearnedFollowsSeedWithoutCascade(t *testing.T) {
+	r, err := loadSeed(t, seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	learned := []Entry{
+		// Learned before the seed grew: same name, now seeded at NET-002.
+		{EventName: "HIGH_LATENCY", Category: "NETWORK", Code: "NET", Number: 7, Severity: "LOW"},
+		// Number now owned by a seed entry of another name: must move.
+		{EventName: "LOG_X", Category: "NETWORK", Code: "NET", Number: 2, Severity: "MEDIUM"},
+		// Not in conflict: must keep their numbers even though LOG_X moves.
+		{EventName: "LOG_Y", Category: "NETWORK", Code: "NET", Number: 3},
+		{EventName: "LOG_Z", Category: "NETWORK", Code: "NET", Number: 4},
+	}
+	changed := r.ReconcileLearned(learned)
+	got := map[string]int{}
+	for _, e := range changed {
+		got[e.EventName] = e.Number
+	}
+	if len(changed) != 2 || got["HIGH_LATENCY"] != 2 || got["LOG_X"] != 5 {
+		t.Fatalf("changed = %+v", changed)
+	}
+	for name, want := range map[string]int{"HIGH_LATENCY": 2, "LOG_X": 5, "LOG_Y": 3, "LOG_Z": 4} {
+		if e, ok := r.Lookup(name); !ok || e.Number != want {
+			t.Fatalf("%s = %+v, want %d", name, e, want)
+		}
+	}
+	if e, _ := r.Lookup("HIGH_LATENCY"); e.Severity != "MEDIUM" {
+		t.Fatalf("seed severity should win: %+v", e)
+	}
+	if e, _ := r.Allocate("LOG_W", "NETWORK", "NET", ""); e.Number != 6 {
+		t.Fatalf("allocation should continue after the move: %+v", e)
+	}
+	// A second start with the reconciled rows changes nothing.
+	r2, _ := loadSeed(t, seed)
+	again := []Entry{{EventName: "LOG_X", Category: "NETWORK", Code: "NET", Number: 5, Severity: "MEDIUM"},
+		{EventName: "LOG_Y", Category: "NETWORK", Code: "NET", Number: 3, Severity: "MEDIUM"}}
+	if c := r2.ReconcileLearned(again); len(c) != 0 {
+		t.Fatalf("stable rows must not change: %+v", c)
+	}
+}

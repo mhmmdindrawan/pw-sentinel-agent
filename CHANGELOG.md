@@ -5,6 +5,48 @@ harus dilakukan operator saat upgrade (restart, ubah config, migrasi).
 Release notes di GitHub diambil otomatis dari bagian tag yang bersangkutan
 (`.github/workflows/release.yml`).
 
+## [v0.4.0] - belum dirilis
+
+Hasil uji end-to-end pertama dengan kiosk nyata (`pw-offstreet-cashless-v3`
+v3.38.0b2) di PC lokal, 2026-11-12: jalur SDK → agent → dashboard terbukti,
+yang dibenahi adalah kualitas sinyal dan keterbacaan.
+
+### Agent
+- Event `LOG_*` (catch-all dari logging handler kiosk) level WARNING
+  diturunkan ke LOW: tidak mewarnai gate. ERROR tetap HIGH.
+- Field `stack` pada event (traceback tanpa nilai variabel, maks 16 KiB),
+  tersimpan dan tampil di detail event.
+- `status_history`: perubahan ONLINE/STALE/DOWN dicatat tiap 30 detik;
+  `status_since` di `/v1/fleet`, `status_history` di `/v1/devices/{id}`.
+- Heartbeat membawa `platform` (`tongbao`/`windows`/`linux`).
+- Registry: `PAYMENT_REJECTED` dan `INSUFFICIENT_BALANCE` → LOW; event baru
+  `APP_EXCEPTION` (APP-003, HIGH), `QRIS_NOT_CONFIGURED` (PAY-004, LOW),
+  `LPR_NO_FEED` (LPR-002, LOW), `MQTT_DISABLED` (MQTT-003, INFO),
+  `GATE_OPEN_FAILED` (DEVICE-002, HIGH), `PCLESS_DISCONNECTED` (DEVICE-003, HIGH).
+- Event yang pernah dipelajari agent dan kini bentrok dengan registry.yaml
+  baru dipindah ke nomor berikutnya saat start (dicatat di log), sehingga
+  satu kode tidak pernah dipakai dua nama.
+
+### Dashboard
+- Detail event dibaca sebagai label/nilai (Pesan, Terjadi di kiosk, Diterima
+  agent, Device, Versi, Endpoint…), konteks, dan stack trace.
+- Tombol **"Salin untuk debugging"**: ringkasan Markdown (gate, waktu, versi,
+  pesan, konteks, stack, link timeline) untuk ditempel ke chat/issue/AI.
+- Kartu gate: platform, **"Mati sejak HH.MM · lama"** saat STALE/DOWN.
+- Halaman gate: status "sejak", Platform, tabel **Riwayat status**.
+
+### SDK Python (0.3.0)
+- `client.exception(exc=None, event=None, ...)`: kirim exception + traceback
+  (frame saja, maks 30, tanpa variabel lokal). `error(..., stack=...)`.
+- `platform=` di konstruktor; default dari OS, Tongbao mengirim `"tongbao"`.
+- Pesan `SENTINEL_GAP` kini menghitung event yang tertahan dengan benar
+  (sebelumnya selalu "0 event(s) waiting").
+
+### Perlu tindakan
+- Restart agent setelah upgrade; skema DB dimigrasi otomatis (kolom
+  `events.stack`, `device_state.platform`, tabel `status_history`).
+- Kiosk: vendor ulang SDK 0.3 dan ikuti `docs/integrasi-kiosk.md` §4b.
+
 ## [v0.3.0] - 2026-11-12
 
 Rilis pertama yang diberi tag. Isinya seluruh pekerjaan MVP + hardening

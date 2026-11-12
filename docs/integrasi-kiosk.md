@@ -99,6 +99,50 @@ if resp.status_code >= 400:
 Yang **tidak boleh** dikirim: isi body request atau response, nomor kartu,
 saldo, maupun kredensial. `transaction_ref` hanya berisi ID referensi.
 
+## 4b. Exception dengan stack trace (untuk developer)
+
+Di blok `except` yang selama ini hanya `logger.error(...)`, panggil
+`exception()` supaya baris kode yang gagal terlihat di dashboard:
+
+```python
+try:
+    fee = calc_fee(ticket)
+except Exception:
+    get_client().exception()            # event APP_EXCEPTION (HIGH) + traceback
+    logger.info("calc_fee gagal")       # info, bukan error: hindari event ganda
+```
+
+Yang dikirim hanya nama file, fungsi, dan nomor baris per frame plus pesan
+exception. Nilai variabel lokal **tidak pernah** dikirim. `exception(exc,
+event="PAYMENT_TIMEOUT")` memakai nama event lain bila lebih tepat.
+
+### Hindari event ganda
+
+Satu kejadian jangan menghasilkan dua event. Kalau sudah ada panggilan
+terstruktur (`error("GATE_OPEN_FAILED")`), log di sebelahnya pakai
+`logger.info`, bukan `logger.error`, karena `_SentinelLoggingHandler`
+meneruskan WARNING/ERROR sebagai event `LOG_*`. Catatan: agent menurunkan
+`LOG_*` level WARNING ke LOW (tidak mewarnai gate); ERROR tetap HIGH.
+
+### Platform
+
+Kirim varian produk supaya NOC membaca event MQTT dalam konteks yang benar:
+
+```python
+SentinelClient(..., platform="tongbao")   # Tongbao: MQTT + hardware, Lubuntu ARM
+# Windows/Linux: biarkan kosong, SDK mengisi dari sistem operasi.
+```
+
+### Event terstruktur untuk kondisi yang sering muncul
+
+| Kondisi di lapangan | Event | Severity | Ganti log warning ini |
+|---|---|---|---|
+| PCLess menolak koneksi / tidak tersambung | `PCLESS_DISCONNECTED` | HIGH | `open_connection: PCLess ... menolak koneksi` (kirim sekali saat putus, sekali saat pulih, bukan tiap 15 detik) |
+| Palang gagal dibuka | `GATE_OPEN_FAILED` | HIGH | sudah ada; log `api_open_gate` di sebelahnya jadikan `info` |
+| Kamera LPR tidak pernah kirim | `LPR_NO_FEED` | LOW | `_refresh_lpr_indicator: Pill LPR merah` |
+| QRIS belum dikonfigurasi | `QRIS_NOT_CONFIGURED` | LOW | `process_qris: XENDIT_QR_SECRET belum diisi` |
+| MQTT sengaja dimatikan (Windows/Linux) | `MQTT_DISABLED` | INFO | `__init__: MQTT_PASSWORD tidak di-set` |
+
 ## 5. Cakupan 4 masalah prioritas
 
 | Masalah | Event | Sumber di aplikasi |
@@ -115,3 +159,5 @@ saldo, maupun kredensial. `transaction_ref` hanya berisi ID referensi.
 - [ ] Putuskan jaringan selama 5 menit, lalu sambungkan lagi: event selama putus muncul di dashboard dan ada `SENTINEL_GAP`.
 - [ ] Hentikan aplikasi: gate berubah STALE setelah ±3 menit dan DOWN setelah ±10 menit, lalu alert "MATI" terkirim.
 - [ ] Transaksi normal tidak melambat (SDK tidak pernah memblokir pemanggil).
+- [ ] Picu satu exception uji: muncul `APP_EXCEPTION` dengan stack trace di detail event, dan "Salin untuk debugging" menghasilkan Markdown yang bisa ditempel.
+- [ ] Kartu gate menampilkan platform (`Tongbao`/`Windows`) dan, saat aplikasi dihentikan, "Mati sejak HH.MM".

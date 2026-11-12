@@ -53,7 +53,8 @@ test("event detail opens with the keyboard", async ({ page }) => {
   await expect(toggle).toHaveAttribute("aria-expanded", "true");
   const detail = page.locator("tr.detail").first();
   await expect(detail).toBeVisible();
-  await expect(detail).toContainText("event_id");
+  await expect(detail).toContainText("Event ID");
+  await expect(detail.getByRole("button", { name: "Salin untuk debugging" })).toBeVisible();
   await page.keyboard.press("Enter");
   await expect(toggle).toHaveAttribute("aria-expanded", "false");
 });

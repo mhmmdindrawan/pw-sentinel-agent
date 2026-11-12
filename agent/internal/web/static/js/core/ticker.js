@@ -3,7 +3,7 @@
 // rebuilding any DOM.
 
 import { h, setText } from "./dom.js";
-import { fmtAgo, fmtTime } from "./format.js";
+import { fmtAgo, fmtTime, fmtClock, fmtSinceDuration } from "./format.js";
 
 export function agoEl(iso, cls) {
   const el = h("time", { class: cls || null });
@@ -24,6 +24,32 @@ export function setAgo(el, iso) {
   setText(el, fmtAgo(iso));
 }
 
+// sinceEl renders "<label> 10.58 · 12 mnt" for a state that began at iso
+// and keeps the duration ticking.
+export function sinceEl(iso, cls) {
+  const el = h("span", { class: cls || null });
+  setSince(el, iso, "");
+  return el;
+}
+
+export function setSince(el, iso, label) {
+  const key = (iso || "") + "|" + (label || "");
+  if (el.dataset.sinceKey === key) return;
+  el.dataset.sinceKey = key;
+  el.dataset.since = iso || "";
+  el.dataset.sinceLabel = label || "";
+  renderSince(el);
+}
+
+function renderSince(el) {
+  const iso = el.dataset.since;
+  if (!iso) { el.replaceChildren(); return; }
+  el.replaceChildren(
+    (el.dataset.sinceLabel ? el.dataset.sinceLabel + " " : "") + fmtClock(new Date(iso)),
+    h("span", { class: "muted", text: " · " + fmtSinceDuration(iso) }));
+  el.title = fmtTime(iso);
+}
+
 const listeners = new Set();
 export function onTick(fn) {
   listeners.add(fn);
@@ -32,5 +58,6 @@ export function onTick(fn) {
 
 setInterval(() => {
   document.querySelectorAll("time[data-ago]").forEach((el) => setText(el, fmtAgo(el.dataset.ago)));
+  document.querySelectorAll("[data-since]").forEach(renderSince);
   listeners.forEach((fn) => fn());
 }, 15000);

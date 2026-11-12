@@ -524,3 +524,104 @@ func TestLongEventNameIsTruncated(t *testing.T) {
 		t.Errorf("same truncated name got a second code: %s vs %s", again.ErrorCode, ev.ErrorCode)
 	}
 }
+
+func TestCatchAllWarningsAreLowButErrorsStayHigh(t *testing.T) {
+	e := newTestServer(t)
+	w := postEvent(t, e, map[string]any{"device_id": "TST-G01", "event": "LOG_CASHLESS__OPEN_CONNECTION", "severity": "WARNING"})
+	if w.Severity != "LOW" {
+		t.Fatalf("catch-all warning: %s", w.Severity)
+	}
+	er := postEvent(t, e, map[string]any{"device_id": "TST-G01", "event": "LOG_CASHLESS__API_OPEN_GATE", "severity": "ERROR"})
+	if er.Severity != "HIGH" {
+		t.Fatalf("catch-all error: %s", er.Severity)
+	}
+	// A registry event is not touched by the rule.
+	if ev := postEvent(t, e, map[string]any{"device_id": "TST-G01", "event": "CARD_READ_TIMEOUT"}); ev.Severity != "MEDIUM" {
+		t.Fatalf("registry MEDIUM: %s", ev.Severity)
+	}
+	// Customer behaviour and catch-all warnings never colour a gate.
+	e.do(http.MethodPost, "/v1/heartbeat", testToken2, map[string]any{"device_id": "TST-G02"})
+	for _, ev := range []map[string]any{
+		{"device_id": "TST-G02", "event": "INSUFFICIENT_BALANCE"},
+		{"device_id": "TST-G02", "event": "LOG_CASHLESS__OPEN_CONNECTION", "severity": "WARNING"},
+	} {
+		if rec := e.do(http.MethodPost, "/v1/events", testToken2, ev); rec.Code != http.StatusCreated {
+			t.Fatalf("post %v: %d %s", ev, rec.Code, rec.Body.String())
+		}
+	}
+	if f := e.fleet(t); f["TST-G02"].Color != "green" || f["TST-G02"].Errors1h != 2 {
+		t.Fatalf("after LOW events: %+v", f["TST-G02"])
+	}
+}
+
+func TestStackIsStoredAndCapped(t *testing.T) {
+	e := newTestServer(t)
+	stack := "Traceback (most recent call last):\n  File \"app/api/payment.py\", line 705, in debit\n    raise RuntimeError(\"x\")\nRuntimeError: x\n"
+	ev := postEvent(t, e, map[string]any{"device_id": "TST-G01", "event": "APP_EXCEPTION", "stack": stack})
+	if ev.Stack != stack || ev.Severity != "HIGH" || ev.ErrorCode != "TST-G01-APP-003" {
+		t.Fatalf("stored: %+v", ev)
+	}
+	var got []model.StoredEvent
+	e.get(t, "/v1/events?device_id=TST-G01", &got)
+	if len(got) != 1 || got[0].Stack != stack {
+		t.Fatalf("read back: %+v", got)
+	}
+	long := strings.Repeat("frame\n", maxStack)
+	ev = postEvent(t, e, map[string]any{"device_id": "TST-G01", "event": "APP_EXCEPTION", "stack": long})
+	if len([]rune(ev.Stack)) > maxStack+32 || !strings.HasSuffix(ev.Stack, "(dipotong)") {
+		t.Fatalf("stack not capped: %d", len(ev.Stack))
+	}
+}
+
+func TestStatusTrackerRecordsChanges(t *testing.T) {
+	e := newTestServer(t)
+	started := e.now
+	e.do(http.MethodPost, "/v1/heartbeat", testToken, map[string]any{"device_id": "TST-G01", "platform": "Tongbao"})
+	track := func() {
+		if err := e.s.TrackStatus(e.now, started); err != nil {
+			t.Fatal(err)
+		}
+	}
+	track()
+	f := e.fleet(t)
+	if f["TST-G01"].StatusSince != started.Format(time.RFC3339) || f["TST-G01"].Platform != "tongbao" {
+		t.Fatalf("online since / platform: %+v", f["TST-G01"])
+	}
+	if f["TST-G02"].StatusSince != "" {
+		t.Fatalf("NEVER must not be recorded: %+v", f["TST-G02"])
+	}
+
+	// Within the start grace nothing but ONLINE is recorded.
+	e.now = e.now.Add(5 * time.Minute)
+	track()
+	if f = e.fleet(t); f["TST-G01"].Status != "STALE" || f["TST-G01"].StatusSince != "" {
+		t.Fatalf("stale inside grace: %+v", f["TST-G01"])
+	}
+	e.now = e.now.Add(10 * time.Minute) // 15m after start: DOWN, past grace
+	track()
+	downAt := e.now.Format(time.RFC3339)
+	if f = e.fleet(t); f["TST-G01"].Status != "DOWN" || f["TST-G01"].StatusSince != downAt {
+		t.Fatalf("down since: %+v", f["TST-G01"])
+	}
+	e.now = e.now.Add(time.Minute)
+	track() // unchanged status: no new row
+	e.do(http.MethodPost, "/v1/heartbeat", testToken, map[string]any{"device_id": "TST-G01"})
+	track()
+	var dev struct {
+		Device  model.FleetDevice    `json:"device"`
+		History []model.StatusChange `json:"status_history"`
+	}
+	e.get(t, "/v1/devices/TST-G01", &dev)
+	if dev.Device.Status != "ONLINE" || dev.Device.StatusSince != e.now.Format(time.RFC3339) {
+		t.Fatalf("online again: %+v", dev.Device)
+	}
+	want := []string{"ONLINE", "DOWN", "ONLINE"}
+	if len(dev.History) != len(want) {
+		t.Fatalf("history: %+v", dev.History)
+	}
+	for i, h := range dev.History {
+		if h.Status != want[i] {
+			t.Fatalf("history[%d] = %s, want %s (%+v)", i, h.Status, want[i], dev.History)
+		}
+	}
+}

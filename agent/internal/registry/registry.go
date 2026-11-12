@@ -132,6 +132,54 @@ func (r *Registry) Register(e Entry) {
 	r.register(e)
 }
 
+// ReconcileLearned re-hydrates the allocations persisted by earlier runs
+// against the seed loaded now. Seed entries win: a learned event the seed
+// now names takes the seed's entry, and one whose number a new seed entry
+// owns moves to a number above everything in use. Every entry that is not
+// in conflict is registered first, so a single collision never shifts the
+// others along. The returned entries differ from what was passed in and
+// must be persisted, so the database never keeps two names on one code.
+func (r *Registry) ReconcileLearned(learned []Entry) (changed []Entry) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var conflicts []Entry
+	for _, e := range learned {
+		e.Severity = defaultSeverity(e.Severity)
+		if seeded, ok := r.entries[e.EventName]; ok {
+			if seeded != e {
+				changed = append(changed, seeded)
+			}
+			continue
+		}
+		if _, taken := r.seedOwner(e.Code, e.Number); taken {
+			conflicts = append(conflicts, e)
+			continue
+		}
+		r.register(e)
+	}
+	for _, e := range conflicts {
+		if r.maxNum[e.Code]+1 >= OverflowNumber {
+			e.Number = OverflowNumber
+		} else {
+			r.maxNum[e.Code]++
+			e.Number = r.maxNum[e.Code]
+		}
+		r.register(e)
+		changed = append(changed, e)
+	}
+	return changed
+}
+
+// seedOwner reports which registered entry holds code-number, if any.
+func (r *Registry) seedOwner(code string, number int) (Entry, bool) {
+	for _, other := range r.entries {
+		if other.Code == code && other.Number == number {
+			return other, true
+		}
+	}
+	return Entry{}, false
+}
+
 // ReservedFrom starts the number range kept for events the SDK emits
 // itself (registry.yaml). Allocation ignores it, so learned events keep
 // counting up from the regular range (SYS-002, not SYS-902).

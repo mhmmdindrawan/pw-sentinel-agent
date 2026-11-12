@@ -11,6 +11,9 @@ type Heartbeat struct {
 	OutboxPending   int    `json:"outbox_pending,omitempty"` // events queued on the kiosk, not yet delivered
 	OutboxDropped   int    `json:"outbox_dropped,omitempty"` // events the SDK had to discard since it started
 	SentAt          string `json:"sent_at,omitempty"`        // RFC3339, client clock — informational only
+	// Platform names the product variant/OS so the dashboard can tell a
+	// Tongbao (MQTT + Lubuntu ARM) kiosk from a Windows or Linux one.
+	Platform string `json:"platform,omitempty"`
 }
 
 // DeviceState is the agent's latest knowledge of one device, kept in its
@@ -26,6 +29,14 @@ type DeviceState struct {
 	OutboxPending   int    `json:"outbox_pending"`
 	OutboxDropped   int    `json:"outbox_dropped"`
 	RemoteAddr      string `json:"remote_addr,omitempty"`
+	Platform        string `json:"platform,omitempty"`
+}
+
+// StatusChange is one row of status_history: the device entered Status at
+// Since (RFC3339 UTC, agent clock).
+type StatusChange struct {
+	Status string `json:"status"`
+	Since  string `json:"since"`
 }
 
 // EventFilter narrows GET /v1/events. Zero values mean "no filter".
@@ -62,6 +73,9 @@ type FleetDevice struct {
 	Status   string `json:"status"`
 	Color    string `json:"color"`
 	LastSeen string `json:"last_seen,omitempty"`
+	// StatusSince is when the device entered its current Status, from
+	// status_history; empty until the tracker has observed a change.
+	StatusSince string `json:"status_since,omitempty"`
 	DeviceState
 	DeviceErrorStats
 }
