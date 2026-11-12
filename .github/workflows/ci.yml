@@ -1,0 +1,119 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Fails fast if a real config/token/database file ever gets committed.
+  # The repo is public; config.yaml, devices.yaml and users.yaml hold tokens
+  # and password hashes.
+  no-secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check no runtime config or database is tracked
+        run: |
+          bad=$(git ls-files | grep -E '(^|/)(config|devices|users)\.ya?ml$|\.db(-wal|-shm)?$|(^|/)\.env$' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::these files must never be committed:"; echo "$bad"; exit 1
+          fi
+          echo "ok: only *.example.yaml are tracked"
+
+  agent:
+    name: agent (go vet, race tests)
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: agent } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: agent/go.mod
+          cache-dependency-path: agent/go.sum
+      - run: go vet ./...
+      - run: go test -race -count=1 ./...
+
+  # Every target the agent is shipped on. A change that compiles on Linux but
+  # not on Windows/ARM must fail here, not on the kiosk host.
+  cross-compile:
+    name: cross-compile (linux/amd64, linux/armv7, windows/amd64)
+    runs-on: ubuntu-latest
+    needs: agent
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 } # tags, so `git describe` names the build
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: agent/go.mod
+          cache-dependency-path: agent/go.sum
+      - run: deploy/build.sh
+      - run: ls -l dist && dist/sentinel-agent-*-linux-amd64 version
+      - uses: actions/upload-artifact@v4
+        if: github.ref == 'refs/heads/main'
+        with:
+          name: sentinel-agent-${{ github.sha }}
+          path: dist/
+          retention-days: 14
+
+  # 3.6 is the floor: the Lubuntu ARM kiosks run Python 3.6.9. setup-python no
+  # longer ships 3.6, so that one runs in the official container image.
+  sdk-python:
+    name: sdk python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.12"]
+    defaults: { run: { working-directory: sdk/python } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "${{ matrix.python }}" }
+      - run: python -m unittest discover -s tests -v
+
+  sdk-python-36:
+    name: sdk python 3.6 (kiosk floor)
+    runs-on: ubuntu-latest
+    container: python:3.6-slim-bullseye
+    defaults: { run: { working-directory: sdk/python } }
+    steps:
+      - uses: actions/checkout@v4
+      - run: python --version && python -m unittest discover -s tests -v
+
+  e2e:
+    name: dashboard e2e (playwright)
+    runs-on: ubuntu-latest
+    needs: agent
+    defaults: { run: { working-directory: e2e } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: agent/go.mod
+          cache-dependency-path: agent/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+      - run: npm ci
+      # playwright.config.js uses channel "chrome": the runner image already
+      # ships Google Chrome, so no browser download is needed.
+      - run: npx playwright test
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: |
+            e2e/playwright-report/
+            e2e/test-results/
+            e2e/.run/agent.log
+          retention-days: 7
