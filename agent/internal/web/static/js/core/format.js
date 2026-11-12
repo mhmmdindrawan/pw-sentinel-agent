@@ -71,6 +71,13 @@ export function fmtBytes(n) {
   return (i ? n.toFixed(n < 10 ? 1 : 0) : n) + " " + units[i];
 }
 
+// fmtVersion: "v3.38.0" whether the source said "3.38.0" or "v3.38.0"
+// (release tags and some kiosk builds already carry the prefix).
+export function fmtVersion(v) {
+  if (!v) return "";
+  return /^v\d/i.test(v) ? v : "v" + v;
+}
+
 export function platformLabel(p) {
   return p ? PLATFORM_TEXT[p] || p : "";
 }

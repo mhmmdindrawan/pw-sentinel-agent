@@ -6,7 +6,7 @@ import { h, setText, debounce } from "../core/dom.js";
 import { api } from "../core/api.js";
 import { Poller } from "../core/poller.js";
 import { connection } from "../core/connection.js";
-import { nf, fmtClock, fmtBytes, statusLabel, platformLabel } from "../core/format.js";
+import { nf, fmtClock, fmtBytes, fmtVersion, statusLabel, platformLabel } from "../core/format.js";
 import { agoEl, setAgo, sinceEl, setSince } from "../core/ticker.js";
 import { statusBadge, statusIcon, sevBadge } from "../ui/badges.js";
 import { tile } from "../ui/tile.js";
@@ -120,7 +120,7 @@ export function mount(root, _params, ctx) {
     if (site.code) parts.push(h("b", { text: site.code + (site.name ? " · " + site.name : "") }));
     if (agent.tailscale_ip) parts.push("agent " + agent.tailscale_ip + (agent.listen_addr ? ":" + agent.listen_addr.split(":").pop() : ""));
     else if (agent.listen_addr) parts.push("agent " + agent.listen_addr);
-    if (agent.version) parts.push("v" + agent.version);
+    if (agent.version) parts.push(fmtVersion(agent.version));
     if (site.code && site.enroll_enabled) parts.push("pendaftaran kiosk aktif");
     siteLine.replaceChildren(...parts.flatMap((p, i) => (i ? [" · ", p] : [p])));
     siteLine.hidden = !parts.length;
@@ -231,7 +231,7 @@ function gateCard() {
     badge.update(d.color, statusLabel(d));
     setText(name, d.name || "");
     name.hidden = !d.name;
-    setText(ident, [d.device_id, d.remote_addr, platformLabel(d.platform), d.app_version ? "v" + d.app_version : ""].filter(Boolean).join(" · "));
+    setText(ident, [d.device_id, d.remote_addr, platformLabel(d.platform), fmtVersion(d.app_version)].filter(Boolean).join(" · "));
     // "Mati sejak 10.58 · 12 mnt" only while the gate is not simply online.
     setSince(since, d.status === "ONLINE" ? "" : d.status_since, STATUS_TEXT_SINCE[d.status]);
     since.hidden = d.status === "ONLINE" || !d.status_since;
