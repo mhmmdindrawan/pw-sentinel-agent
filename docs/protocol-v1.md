@@ -14,6 +14,13 @@ carries an implicit location/gate from "whichever agent process received
 it"; the agent resolves location/gate **per event**, from an authenticated
 `device_id`.
 
+Since 0.5 the intended layout is **one agent per site**: it runs on the
+location's local server (PCC with 2 gates, PJT with 4, …) and only tracks
+the gates of that site. `site.code` in config.yaml is the location every
+enrolled kiosk is attributed to; the dashboard header shows
+`CODE · name` and the agent's Tailscale IP so support knows where they are
+looking. A central agent on a VPS still works (static `devices.yaml`).
+
 ## Request: `POST /v1/events`
 
 Headers:
@@ -56,10 +63,67 @@ gate: in the field these are configuration notes (MQTT off, LPR not sending,
 QRIS secret missing), not faults. `ERROR`-level ones stay HIGH so a code
 failure is still visible. Name the recurring ones as registry events instead.
 
+## Enrollment: `POST /v1/enroll`
+
+A kiosk can obtain its own device token from the site's agent instead of
+an operator running `device add`. The only credential is the **site enroll
+key** (`site.enroll_key` / `SENTINEL_SITE_KEY` on the agent; one per
+location, shared by its gates). It is used for this call alone; from then
+on the kiosk authenticates with the returned token. No `Authorization`
+header.
+
+```json
+{
+  "site_key":   "<site enroll key>",
+  "device_id":  "PCC-G01-POS01",
+  "gate":       "G01",
+  "pos":        "POS01",
+  "gate_name":  "Gate Keluar Utara",
+  "platform":   "tongbao",
+  "app_version":"3.38.0"
+}
+```
+
+| Field | Required | Notes |
+|---|---|---|
+| `site_key`  | yes | Compared in constant time. Wrong keys count against a per-IP limiter (**429** after repeated failures, same policy as dashboard login). |
+| `device_id` | yes | 1–64 chars: letters, digits, `.` `_` `-`. Should be unique per kiosk; the app's existing `SENTINEL_DEVICE_ID`. |
+| `gate`      | yes | Short code (`G01`), upper-cased by the agent. |
+| `pos`       | no  | Same charset as `device_id`. |
+| `gate_name` | no  | Human label shown on the card (≤ 64 chars). |
+| `platform`, `app_version` | no | Stored as the first heartbeat so the card is complete immediately. |
+
+Response **201**:
+
+```json
+{"device_id":"PCC-G01-POS01","location":"PCC","gate":"G01","pos":"POS01",
+ "site_name":"Plaza Central City","token":"<48-char token>"}
+```
+
+`location` is always the agent's `site.code` — a kiosk cannot claim another
+site. The token is returned **once** and only its SHA-256 is stored
+(`devices` table); the kiosk must persist it. Re-enrolling an existing
+enrolled `device_id` **rotates** its token (the old one stops working at
+once), which is how a reinstalled kiosk recovers without an operator. A
+`device_id` that exists in `devices.yaml` cannot be taken over → **409**.
+
+| Status | Meaning |
+|---|---|
+| `201` | Enrolled (or re-enrolled). |
+| `400` | Bad JSON or an invalid `device_id`/`gate`/`pos`. |
+| `401` | Wrong site key. |
+| `404` | Enrollment is off on this agent (`site.code` or `site.enroll_key` unset). |
+| `409` | `device_id` belongs to a static `devices.yaml` entry. |
+| `429` | Too many wrong keys from this IP. |
+
+Operators see enrolled devices with `sentinel-agent device list`
+(column `enrolled`) and remove one with `device revoke -id …`.
+
 ## Auth and device resolution
 
-Every entry in the agent's `devices.yaml` binds exactly one `device_id` to
-exactly one bearer token. Resolution proceeds:
+Every entry in the agent's `devices.yaml`, and every enrolled device,
+binds exactly one `device_id` to exactly one bearer token. Resolution
+proceeds:
 
 1. No valid token presented → **401**. This is a pure auth failure: with no
    trusted credential at all, the event cannot be safely attributed to any
@@ -152,9 +216,13 @@ heartbeating and shows up as STALE/DOWN.
 | `outbox_dropped` | int    | Events the SDK discarded since it started (queue/outbox full). |
 | `sent_at`        | string (RFC3339) | Client clock; informational. |
 | `platform`       | string | Product variant/OS: `tongbao` (MQTT + hardware, Lubuntu ARM), `windows`, `linux`. Lower-cased by the agent, kept until the next value. Shown on the gate card so MQTT events are read in context. |
+| `gate_name`      | string | Human label of the gate as set in the kiosk app's settings (≤ 64 chars). Updates the card/detail title for any device. |
+| `gate`, `pos`    | string | Identity the kiosk claims for itself. For an **enrolled** device a change moves it (its future events get the new gate/pos; logged as "moved itself"). For a static `devices.yaml` device these are ignored — gate is the operator's decision. |
 
 Response **200** `{"status": "ok", "server_time": "<RFC3339>"}`. Heartbeats
 are not stored as events; they update the device's row in `device_state`.
+Because `gate_name`/`gate`/`pos` ride on the heartbeat, renaming a gate in
+the kiosk app reaches the dashboard within a minute, with no agent restart.
 
 ### Liveness and gate colour
 
@@ -190,6 +258,18 @@ session cookie from `POST /v1/auth/login`, or HTTP Basic credentials of a
 `users.yaml` user (for scripts). **Device tokens are rejected here** — a
 kiosk's credential is write-only and must not read other kiosks' data.
 `GET /v1/health` stays public and reveals no event or device data.
+
+`GET /v1/fleet` carries, besides `devices`, `unmapped_24h` and `generated_at`:
+
+- `site`: `{code, name, enroll_enabled}` from config.yaml.
+- `agent`: `{version, listen_addr, tailscale_ip, db_size_bytes,
+  db_max_bytes, disk_free_bytes, retention_days}`. `tailscale_ip` is the
+  host's first IPv4 in 100.64.0.0/10 (cached a minute). The dashboard
+  warns when the DB is above 80 % of `retention.max_db_mb` or the disk
+  has under 1 GiB free.
+
+Each device row includes `name` (the kiosk's `gate_name`), `platform`,
+`status_since` and `enrolled` (true when the token came from `/v1/enroll`).
 
 `GET /v1/events` filters: `device_id`, `location`, `gate`, `error_code`,
 `event`, `severity` (minimum: `MEDIUM` also returns HIGH and CRITICAL),

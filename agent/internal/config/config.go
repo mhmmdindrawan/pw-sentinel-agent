@@ -7,6 +7,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -46,6 +47,10 @@ type Status struct {
 
 type Retention struct {
 	Days int `yaml:"days"` // events older than this are deleted daily; 0 = default
+	// MaxDBMB caps the database file. When the daily purge leaves it
+	// larger, the oldest events are dropped regardless of Days, so a
+	// noisy kiosk can never fill the site server's disk. 0 = 500.
+	MaxDBMB int `yaml:"max_db_mb"`
 }
 
 type App struct {
@@ -61,8 +66,23 @@ type Monitor struct {
 	PingIntervalSeconds int    `yaml:"ping_interval_seconds"`
 }
 
+// Site names the location this agent serves when it runs on that location's
+// own server (one agent per site, many gates). With EnrollKey set, a kiosk
+// that knows the key can register itself (POST /v1/enroll) and receives its
+// own device token; every enrolled device is attributed to Code. Leave the
+// key empty to keep enrollment off and manage devices.yaml by hand.
+type Site struct {
+	Code      string `yaml:"code"`
+	Name      string `yaml:"name"`
+	EnrollKey string `yaml:"enroll_key"` // or SENTINEL_SITE_KEY in the environment
+}
+
+// EnrollEnabled reports whether kiosks may self-register.
+func (s Site) EnrollEnabled() bool { return s.Code != "" && s.EnrollKey != "" }
+
 type Config struct {
 	Identity  Identity  `yaml:"identity"`
+	Site      Site      `yaml:"site"`
 	Server    Server    `yaml:"server"`
 	App       App       `yaml:"app"`
 	Status    Status    `yaml:"status"`
@@ -115,6 +135,23 @@ func Load(path string) (*Config, error) {
 	}
 	if v := os.Getenv("SENTINEL_PING_URL"); v != "" {
 		cfg.Monitor.PingURL = v
+	}
+	if v := os.Getenv("SENTINEL_SITE_KEY"); v != "" {
+		cfg.Site.EnrollKey = v
+	}
+	cfg.Site.Code = strings.ToUpper(strings.TrimSpace(cfg.Site.Code))
+	cfg.Site.Name = strings.TrimSpace(cfg.Site.Name)
+	cfg.Site.EnrollKey = strings.TrimSpace(cfg.Site.EnrollKey)
+	if cfg.Site.EnrollKey != "" {
+		if cfg.Site.Code == "" {
+			return nil, fmt.Errorf("config %s: site.enroll_key is set but site.code is empty", path)
+		}
+		if len(cfg.Site.EnrollKey) < 16 {
+			return nil, fmt.Errorf("config %s: site.enroll_key must be at least 16 characters (generate one with: openssl rand -hex 16)", path)
+		}
+	}
+	if cfg.Retention.MaxDBMB <= 0 {
+		cfg.Retention.MaxDBMB = 500
 	}
 	if cfg.Monitor.PingIntervalSeconds <= 0 {
 		cfg.Monitor.PingIntervalSeconds = 60

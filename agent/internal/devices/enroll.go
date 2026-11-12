@@ -16,6 +16,20 @@ var (
 	validLabel    = regexp.MustCompile(`^[A-Z0-9]{1,16}$`)
 )
 
+// ValidDeviceID / ValidLabel are the same rules POST /v1/enroll applies to
+// what a kiosk claims about itself.
+func ValidDeviceID(s string) bool { return validDeviceID.MatchString(s) }
+func ValidLabel(s string) bool    { return validLabel.MatchString(s) }
+
+// NewToken returns a fresh 64-hex-character bearer token.
+func NewToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
 // AddDevice appends a new device with a freshly generated token to
 // devices.yaml and returns the token. It appends text rather than
 // re-marshalling, so operator comments in the file survive. The result is
@@ -50,11 +64,10 @@ func AddDevice(path, deviceID, location, gate, pos string) (string, error) {
 		before = reg.Count()
 	}
 
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
+	token, err := NewToken()
+	if err != nil {
 		return "", err
 	}
-	token := hex.EncodeToString(b)
 
 	content := string(existing)
 	if before == 0 && !strings.Contains(content, "devices:") {

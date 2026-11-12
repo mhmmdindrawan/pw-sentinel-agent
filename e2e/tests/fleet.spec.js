@@ -28,6 +28,20 @@ test("tiles and cards show every gate state, red first", async ({ page }) => {
   }
 });
 
+test("site line names the location and the agent; cards carry gate names", async ({ page }) => {
+  await login(page);
+  const site = page.locator(".site-line");
+  await expect(site).toContainText("STI · Stasiun Tugu (demo)");
+  await expect(site).toContainText("agent ");
+  await expect(page).toHaveTitle("STI — Parkways Sentinel");
+
+  await expect(card(page, "STI-G04-POS01").locator(".name")).toHaveText("Gate Keluar Basement");
+  // Search matches the human name, not only the code.
+  await page.getByLabel("Cari gate").fill("basement");
+  await expect(page.locator("a.card:visible")).toHaveCount(1);
+  await expect(card(page, "STI-G04-POS01")).toBeVisible();
+});
+
 test("refresh updates cards in place: focus, typed search and scroll survive", async ({ page }) => {
   await page.clock.install();
   await login(page);

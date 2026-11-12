@@ -1,18 +1,25 @@
 // Package devices maps an authenticated kiosk/gate machine (device_id) to
 // the location/gate/pos it should be attributed to, and the bearer token
-// that authenticates it. One agent now serves many kiosks, so this mapping
-// — not the agent's own local config — is the source of truth for identity.
+// that authenticates it. One agent serves many kiosks, so this mapping —
+// not the agent's own local config — is the source of truth for identity.
 //
-// The mapping is loaded once at startup from devices.yaml. There is no
-// hot-reload: adding a kiosk is a rare, operator-driven event, so a restart
-// is an acceptable and much simpler tradeoff than live file-watching.
+// Two kinds of entry live side by side:
+//
+//   - static ones from devices.yaml, loaded once at startup (no hot-reload:
+//     editing the file is a rare operator action and a restart is fine);
+//   - enrolled ones, created at runtime by POST /v1/enroll with the site's
+//     enroll key and persisted by the store. Their tokens are kept only as
+//     SHA-256 hashes, so a copy of the database can't impersonate a kiosk.
 package devices
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"sort"
 	"strings"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 )
@@ -22,12 +29,15 @@ type Entry struct {
 	Location string
 	Gate     string
 	POS      string
-	Token    string
+	Token    string // plaintext for static entries, "" for enrolled ones
+	Enrolled bool   // registered at runtime through POST /v1/enroll
 }
 
 type Registry struct {
-	byDeviceID map[string]Entry
-	byToken    map[string]Entry
+	mu          sync.RWMutex
+	byDeviceID  map[string]Entry
+	byToken     map[string]Entry // static entries, by plaintext token
+	byTokenHash map[string]Entry // enrolled entries, by HashToken(token)
 }
 
 type deviceFile struct {
@@ -50,11 +60,7 @@ func Load(path string) (*Registry, error) {
 		return nil, fmt.Errorf("parse devices file %s: %w", path, err)
 	}
 
-	r := &Registry{
-		byDeviceID: make(map[string]Entry),
-		byToken:    make(map[string]Entry),
-	}
-
+	r := newRegistry()
 	for id, d := range df.Devices {
 		id = strings.TrimSpace(id)
 		if id == "" {
@@ -82,29 +88,114 @@ func Load(path string) (*Registry, error) {
 	return r, nil
 }
 
+// Empty returns a registry with no static devices, for agents that rely on
+// enrollment alone (devices.yaml absent).
+func Empty() *Registry { return newRegistry() }
+
+func newRegistry() *Registry {
+	return &Registry{
+		byDeviceID:  make(map[string]Entry),
+		byToken:     make(map[string]Entry),
+		byTokenHash: make(map[string]Entry),
+	}
+}
+
+// HashToken is how enrolled tokens are stored and looked up.
+func HashToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
 // ByToken looks up a device entry by its bearer token — the primary
 // authentication lookup, since the token is the credential a request
 // actually proves possession of.
 func (r *Registry) ByToken(token string) (Entry, bool) {
-	e, ok := r.byToken[token]
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if e, ok := r.byToken[token]; ok {
+		return e, true
+	}
+	e, ok := r.byTokenHash[HashToken(token)]
 	return e, ok
 }
 
 // ByDeviceID looks up a device entry by its device_id, without any auth
 // implication — used for diagnostics, not for authenticating requests.
 func (r *Registry) ByDeviceID(id string) (Entry, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	e, ok := r.byDeviceID[id]
 	return e, ok
 }
 
+// PutEnrolled adds or replaces an enrolled device. A device that exists
+// statically in devices.yaml cannot be enrolled over. Re-enrolling an
+// enrolled device replaces its token hash (the old token stops working).
+func (r *Registry) PutEnrolled(e Entry, tokenHash string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if prev, ok := r.byDeviceID[e.DeviceID]; ok && !prev.Enrolled {
+		return fmt.Errorf("device %q is managed in devices.yaml", e.DeviceID)
+	}
+	r.dropEnrolledLocked(e.DeviceID)
+	e.Enrolled, e.Token = true, ""
+	r.byDeviceID[e.DeviceID] = e
+	r.byTokenHash[tokenHash] = e
+	return nil
+}
+
+// UpdateEnrolled changes gate/pos of an enrolled device in place (the token
+// stays). ok is false for unknown or static devices.
+func (r *Registry) UpdateEnrolled(deviceID, gate, pos string) (Entry, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e, ok := r.byDeviceID[deviceID]
+	if !ok || !e.Enrolled {
+		return Entry{}, false
+	}
+	e.Gate, e.POS = gate, pos
+	r.byDeviceID[deviceID] = e
+	for h, x := range r.byTokenHash {
+		if x.DeviceID == deviceID {
+			r.byTokenHash[h] = e
+		}
+	}
+	return e, true
+}
+
+// RemoveEnrolled revokes an enrolled device; ok is false if it was not one.
+func (r *Registry) RemoveEnrolled(deviceID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e, ok := r.byDeviceID[deviceID]
+	if !ok || !e.Enrolled {
+		return false
+	}
+	r.dropEnrolledLocked(deviceID)
+	return true
+}
+
+func (r *Registry) dropEnrolledLocked(deviceID string) {
+	delete(r.byDeviceID, deviceID)
+	for h, x := range r.byTokenHash {
+		if x.DeviceID == deviceID {
+			delete(r.byTokenHash, h)
+		}
+	}
+}
+
 // Count returns the number of configured devices.
 func (r *Registry) Count() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return len(r.byDeviceID)
 }
 
 // All returns every configured device, sorted by location, gate, then
 // device_id — the order the fleet view lists them in.
 func (r *Registry) All() []Entry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	out := make([]Entry, 0, len(r.byDeviceID))
 	for _, e := range r.byDeviceID {
 		out = append(out, e)

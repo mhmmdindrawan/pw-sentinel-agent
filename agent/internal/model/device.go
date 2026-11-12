@@ -14,6 +14,24 @@ type Heartbeat struct {
 	// Platform names the product variant/OS so the dashboard can tell a
 	// Tongbao (MQTT + Lubuntu ARM) kiosk from a Windows or Linux one.
 	Platform string `json:"platform,omitempty"`
+	// What the kiosk says about itself, set from the gate-out app's own
+	// settings so support never has to edit the agent. Name is kept for
+	// every device; Gate/POS only move an *enrolled* device.
+	Name string `json:"gate_name,omitempty"`
+	Gate string `json:"gate,omitempty"`
+	POS  string `json:"pos,omitempty"`
+}
+
+// EnrollRequest is what a kiosk posts to POST /v1/enroll, authenticated by
+// the site's enroll key rather than a device token (it has none yet).
+type EnrollRequest struct {
+	SiteKey    string `json:"site_key"`
+	DeviceID   string `json:"device_id"`
+	Gate       string `json:"gate"`
+	POS        string `json:"pos,omitempty"`
+	Name       string `json:"gate_name,omitempty"`
+	Platform   string `json:"platform,omitempty"`
+	AppVersion string `json:"app_version,omitempty"`
 }
 
 // DeviceState is the agent's latest knowledge of one device, kept in its
@@ -30,6 +48,7 @@ type DeviceState struct {
 	OutboxDropped   int    `json:"outbox_dropped"`
 	RemoteAddr      string `json:"remote_addr,omitempty"`
 	Platform        string `json:"platform,omitempty"`
+	Name            string `json:"name,omitempty"`
 }
 
 // StatusChange is one row of status_history: the device entered Status at
@@ -76,6 +95,7 @@ type FleetDevice struct {
 	// StatusSince is when the device entered its current Status, from
 	// status_history; empty until the tracker has observed a change.
 	StatusSince string `json:"status_since,omitempty"`
+	Enrolled    bool   `json:"enrolled"` // registered itself with the site key
 	DeviceState
 	DeviceErrorStats
 }

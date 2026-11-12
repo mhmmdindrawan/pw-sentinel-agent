@@ -11,7 +11,10 @@ test("gate detail shows status, tiles, chart and summary", async ({ page }) => {
   await expect(page.locator(".chart svg path.bar").first()).toBeVisible();
   await expect(page.getByRole("img", { name: /Error per jam/ })).toBeVisible();
   await expect(page.locator("table").filter({ hasText: "READER_NOT_READY" }).first()).toBeVisible();
-  await expect(page).toHaveTitle("STI G02 — Parkways Sentinel");
+  await expect(page).toHaveTitle("STI G02 Gate Keluar 2 — Parkways Sentinel");
+  // The gate's own name (set by the kiosk app) sits next to the code.
+  await expect(page.locator("h1 .title-name")).toHaveText("Gate Keluar 2");
+  await expect(page.getByText("dari devices.yaml")).toBeVisible();
 });
 
 test("new events show a notice instead of reshuffling open rows", async ({ page }) => {

@@ -148,3 +148,51 @@ func TestPurgeEventsBeforeInBatches(t *testing.T) {
 		t.Fatalf("alert_log rows = %d (err %v), want 1", alerts, err)
 	}
 }
+
+func TestTrimToSizeDropsOldestAndBackupCopies(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(filepath.Join(dir, "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	big := strings.Repeat("x", 2000)
+	for i := 0; i < 600; i++ {
+		if _, err := s.InsertEvent(model.StoredEvent{DeviceID: "d", EventID: fmt.Sprintf("e%d", i), Location: "L", Gate: "G",
+			Category: "APP", ErrorCode: "L-G-APP-001", Event: "X", Severity: "LOW", Message: big, ReceivedAt: "2026-01-01T00:00:00Z"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	size, free, err := s.Usage()
+	if err != nil || size < 1_000_000 || free <= 0 {
+		t.Fatalf("usage: %d %d %v", size, free, err)
+	}
+	n, err := s.TrimToSize(400_000)
+	if err != nil || n == 0 {
+		t.Fatalf("trim: %d %v", n, err)
+	}
+	if size, _, _ = s.Usage(); size > 400_000 {
+		t.Fatalf("still %d bytes", size)
+	}
+	// The newest rows survive.
+	evs, _ := s.RecentEvents(1)
+	if len(evs) != 1 || evs[0].EventID != "e599" {
+		t.Fatalf("newest: %+v", evs)
+	}
+	dst := filepath.Join(dir, "backup.db")
+	if err := s.Backup(dst); err != nil {
+		t.Fatal(err)
+	}
+	b, err := Open(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	got, _ := b.RecentEvents(1)
+	if len(got) != 1 || got[0].EventID != "e599" {
+		t.Fatalf("backup content: %+v", got)
+	}
+	if err := s.Backup(dst); err == nil {
+		t.Fatal("backup must refuse to overwrite")
+	}
+}

@@ -5,6 +5,54 @@ harus dilakukan operator saat upgrade (restart, ubah config, migrasi).
 Release notes di GitHub diambil otomatis dari bagian tag yang bersangkutan
 (`.github/workflows/release.yml`).
 
+## [v0.5.0] - belum dirilis
+
+Model deployment baru: **satu agent per lokasi** di server lokal (PCC 2
+gate, PJT 4 gate, …), kiosk mendaftar sendiri dengan kunci lokasi, dan nama
+gate diatur dari aplikasi gateout. Agent pusat di VPS dengan `devices.yaml`
+tetap didukung.
+
+### Agent
+- `site:` di config.yaml (`code`, `name`, `enroll_key` / env
+  `SENTINEL_SITE_KEY`). `POST /v1/enroll`: kiosk mengirim kunci lokasi +
+  `device_id`/`gate`/`pos`/`gate_name`/`platform` dan menerima token
+  miliknya sendiri (hanya hash SHA-256 yang disimpan, tabel `devices`).
+  Enroll ulang merotasi token; entri `devices.yaml` tidak bisa diambil alih
+  (409); kunci salah dibatasi per IP (429). `location` selalu `site.code`.
+- Heartbeat membawa `gate_name`, `gate`, `pos`: nama gate tampil di kartu,
+  device hasil enroll bisa pindah gate dari pengaturan aplikasi tanpa
+  restart agent.
+- `/v1/fleet` menambah `site` dan `agent` (versi, alamat, IP Tailscale,
+  ukuran DB, batas, sisa disk); tiap device membawa `name` dan `enrolled`.
+- `retention.max_db_mb` (default 500): di atas batas ini event tertua
+  dibuang lebih awal dari `days`, dicatat di log. `devices.yaml` opsional
+  bila enrollment aktif.
+- CLI: `device list` menampilkan device enroll, `device revoke -id`,
+  `backup -out FILE` (`VACUUM INTO`, tanpa sqlite3).
+
+### Dashboard
+- Baris lokasi di bawah judul: `PCC · Plaza Central City · agent
+  100.x.y.z:8787 · vX · pendaftaran kiosk aktif`; judul tab memakai kode lokasi.
+- Nama gate di kartu dan judul halaman gate; pencarian juga mencocokkan
+  nama dan alamat. Halaman gate menyebut asal token (enroll / devices.yaml).
+- Peringatan kuning saat DB >80 % batas atau sisa disk <1 GB.
+
+### SDK Python (0.3.0)
+- `enroll(base_url, site_key, device_id, gate, pos=, gate_name=,
+  platform=, app_version=)` → dict dengan `token`; `EnrollError(status)`.
+- `gate=`, `gate_name=`, `pos=` di konstruktor, ikut setiap heartbeat.
+
+### Dokumen
+- `docs/deploy-server-lokasi.md` (runbook per lokasi, beban, backup),
+  `docs/prompt-integrasi-gateout.md` (prompt untuk repo aplikasi gateout),
+  protocol-v1 §Enrollment, integrasi-kiosk §2 alur enroll.
+
+### Perlu tindakan
+- Restart agent; migrasi otomatis (kolom `device_state.name`, tabel
+  `devices`). Tanpa `site:` perilaku sama seperti 0.4.
+- Server lokasi baru: isi `site.code/name`, set `SENTINEL_SITE_KEY`, lalu
+  kiosk diisi `SENTINEL_SITE_KEY` + `SENTINEL_GATE(_NAME)` (SDK 0.3).
+
 ## [v0.4.0] - belum dirilis
 
 Hasil uji end-to-end pertama dengan kiosk nyata (`pw-offstreet-cashless-v3`

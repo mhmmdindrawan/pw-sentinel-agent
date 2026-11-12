@@ -67,6 +67,7 @@ func (s *Server) Fleet(now time.Time) ([]model.FleetDevice, error) {
 			Status:           string(live),
 			Color:            string(status.GateColor(live, es.WorstRecent, st.OutboxPending)),
 			LastSeen:         lastSeen,
+			Enrolled:         d.Enrolled,
 			DeviceState:      st,
 			DeviceErrorStats: es,
 		}
@@ -113,6 +114,8 @@ func (s *Server) handleFleet(w http.ResponseWriter, r *http.Request) {
 			"stale_minutes":        int(th.Stale.Minutes()),
 			"error_window_minutes": int(window.Minutes()),
 		},
+		"site":         s.siteInfo(),
+		"agent":        s.agentInfo(),
 		"devices":      fleet,
 		"unmapped_24h": unmapped,
 	})
