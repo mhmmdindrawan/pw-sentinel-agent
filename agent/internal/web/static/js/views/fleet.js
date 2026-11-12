@@ -6,12 +6,13 @@ import { h, setText, debounce } from "../core/dom.js";
 import { api } from "../core/api.js";
 import { Poller } from "../core/poller.js";
 import { connection } from "../core/connection.js";
-import { nf, fmtClock, statusLabel } from "../core/format.js";
-import { agoEl, setAgo } from "../core/ticker.js";
+import { nf, fmtClock, statusLabel, platformLabel } from "../core/format.js";
+import { agoEl, setAgo, sinceEl, setSince } from "../core/ticker.js";
 import { statusBadge, statusIcon, sevBadge } from "../ui/badges.js";
 import { tile } from "../ui/tile.js";
 
 const INTERVAL = 15000;
+const STATUS_TEXT_SINCE = { STALE: "Terlambat sejak", DOWN: "Mati sejak" };
 // Filters survive navigating to a gate and back.
 const filter = { location: "", q: "" };
 
@@ -167,6 +168,7 @@ function gateCard() {
   const gate = h("span", { class: "gate" });
   const badge = statusBadge("green", "");
   const ident = h("div", { class: "meta" });
+  const since = sinceEl("", "since");
   const seen = agoEl("");
   const errs1 = h("b"), errs24 = h("b"), outbox = h("b");
   const outboxWrap = h("span", {}, "Antrean ", outbox);
@@ -182,6 +184,7 @@ function gateCard() {
   const el = h("a", { class: "card" },
     h("div", { class: "row" }, gate, badge),
     ident,
+    since,
     h("div", { class: "meta" }, "Terakhir terlihat ", seen),
     h("div", { class: "counts" },
       h("span", {}, "Error 1 jam ", errs1), h("span", {}, "24 jam ", errs24), outboxWrap),
@@ -193,7 +196,10 @@ function gateCard() {
     el.setAttribute("aria-label", `${d.location} ${d.gate}: ${statusLabel(d)}`);
     setText(gate, d.gate);
     badge.update(d.color, statusLabel(d));
-    setText(ident, d.device_id + (d.app_version ? " · v" + d.app_version : ""));
+    setText(ident, [d.device_id, platformLabel(d.platform), d.app_version ? "v" + d.app_version : ""].filter(Boolean).join(" · "));
+    // "Mati sejak 10.58 · 12 mnt" only while the gate is not simply online.
+    setSince(since, d.status === "ONLINE" ? "" : d.status_since, STATUS_TEXT_SINCE[d.status]);
+    since.hidden = d.status === "ONLINE" || !d.status_since;
     setAgo(seen, d.last_seen);
     setText(errs1, nf.format(d.errors_1h || 0));
     setText(errs24, nf.format(d.errors_24h || 0));

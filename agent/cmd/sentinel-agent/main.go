@@ -100,8 +100,12 @@ func serve() {
 	if err != nil {
 		log.Fatalf("load learned events: %v", err)
 	}
-	for _, e := range custom {
-		reg.Register(e)
+	// A newer registry.yaml may now name a learned event, or own its number.
+	for _, final := range reg.ReconcileLearned(custom) {
+		if err := db.SaveCustomRegistryEntry(final, true); err != nil {
+			log.Fatalf("update learned event %q: %v", final.EventName, err)
+		}
+		log.Printf("notice: learned event %q now %s-%03d to follow registry.yaml", final.EventName, final.Code, final.Number)
 	}
 	if len(custom) > 0 {
 		log.Printf("loaded %d previously learned event(s) from local database", len(custom))
@@ -124,6 +128,7 @@ func serve() {
 	defer stop()
 
 	go runRetention(ctx, db, cfg.Retention.Days)
+	go srv.RunStatusTracker(ctx, 30*time.Second)
 	if cfg.Monitor.PingURL != "" {
 		go runPing(ctx, db, cfg.Monitor.PingURL, time.Duration(cfg.Monitor.PingIntervalSeconds)*time.Second)
 		log.Printf("monitor: pinging %s every %ds", redactURL(cfg.Monitor.PingURL), cfg.Monitor.PingIntervalSeconds)
@@ -165,11 +170,15 @@ func serve() {
 // runRetention deletes events older than `days`, at startup and then daily.
 func runRetention(ctx context.Context, db *store.Store, days int) {
 	purge := func() {
-		n, err := db.PurgeEventsBefore(time.Now().AddDate(0, 0, -days))
+		cutoff := time.Now().AddDate(0, 0, -days)
+		n, err := db.PurgeEventsBefore(cutoff)
 		if err != nil {
 			log.Printf("retention: %v", err)
 		} else if n > 0 {
 			log.Printf("retention: deleted %d event(s) older than %d days", n, days)
+		}
+		if _, err := db.PurgeStatusHistoryBefore(cutoff.UTC().Format(time.RFC3339)); err != nil {
+			log.Printf("retention: %v", err)
 		}
 	}
 	purge()

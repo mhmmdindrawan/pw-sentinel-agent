@@ -49,6 +49,7 @@ type gate struct {
 	outbox      int
 	recent      []string // events in the last few minutes (drive the colour)
 	noisy       float64  // relative amount of 30-day history
+	platform    string   // "tongbao" (MQTT + Lubuntu ARM), "windows", "linux"
 }
 
 func fixture(n int) []gate {
@@ -56,7 +57,7 @@ func fixture(n int) []gate {
 		return []gate{
 			{id: "STI-G01-POS01", location: "STI", gate: "G01", name: "Gate Keluar 1", live: true, noisy: 0.5},
 			{id: "STI-G02-POS01", location: "STI", gate: "G02", name: "Gate Keluar 2", live: true, noisy: 2,
-				recent: []string{"READER_NOT_READY", "READER_NOT_READY", "PAYMENT_TIMEOUT"}},
+				recent: []string{"READER_NOT_READY", "READER_NOT_READY", "APP_EXCEPTION", "PAYMENT_TIMEOUT"}},
 			{id: "STI-G03-POS01", location: "STI", gate: "G03", name: "Gate Keluar 3", live: true, outbox: 37, noisy: 1,
 				recent: []string{"MQTT_DISCONNECTED"}},
 			{id: "STI-G04-POS01", location: "STI", gate: "G04", name: "Gate Keluar Basement", lastSeenAgo: 25 * time.Minute, noisy: 1},
@@ -72,7 +73,7 @@ func fixture(n int) []gate {
 	for i := 0; i < n; i++ {
 		loc := fmt.Sprintf("L%02d", i/10+1)
 		g := gate{id: fmt.Sprintf("%s-G%02d-POS01", loc, i%10+1), location: loc, gate: fmt.Sprintf("G%02d", i%10+1),
-			live: true, noisy: rng.Float64()}
+			live: true, noisy: rng.Float64(), platform: []string{"tongbao", "windows", "linux"}[i%3]}
 		switch r := rng.Float64(); {
 		case r < 0.05:
 			g.live, g.lastSeenAgo = false, 30*time.Minute
@@ -104,6 +105,30 @@ var messages = map[string]string{
 	"INSUFFICIENT_BALANCE": "saldo kartu tidak cukup",
 	"PRINT_FAILED":         "printer kehabisan kertas",
 	"APP_STARTED":          "aplikasi dimulai",
+	"APP_EXCEPTION":        "TypeError: unsupported operand type(s) for -: 'NoneType' and 'int'",
+}
+
+// stacks holds the traceback for events that carry one (frames only).
+var stacks = map[string]string{
+	"APP_EXCEPTION": `Traceback (most recent call last):
+  File "src/controller.py", line 412, in _handle_card
+    fee = self._calc_fee(ticket)
+  File "src/controller.py", line 388, in _calc_fee
+    duration = ticket.exit_time - ticket.entry_time
+TypeError: unsupported operand type(s) for -: 'NoneType' and 'int'
+`,
+}
+
+// platformFor fills in the curated fixture: STI runs Tongbao kiosks, LBI
+// runs the Windows build.
+func platformFor(g gate) string {
+	if g.platform != "" {
+		return g.platform
+	}
+	if g.location == "STI" {
+		return "tongbao"
+	}
+	return "windows"
 }
 
 func main() {
@@ -230,7 +255,7 @@ retention:
 			Location: e.g.location, Gate: e.g.gate, POS: "POS01", Device: deviceFor(e.name),
 			Category: entry.Category, ErrorCode: registry.ErrorCode(e.g.location, e.g.gate, entry),
 			Event: e.name, Severity: entry.Severity, Message: messages[e.name], AppVersion: "3.1.4",
-			ReceivedAt: ts,
+			ReceivedAt: ts, Stack: stacks[e.name],
 		}); err != nil {
 			return err
 		}
@@ -245,10 +270,35 @@ retention:
 		}
 		if err := db.UpsertHeartbeat(model.DeviceState{
 			DeviceID: g.id, LastHeartbeatAt: now.Add(-g.lastSeenAgo).Format(time.RFC3339),
-			AppVersion: "3.1.4", SDKVersion: "0.2.0", UptimeS: 3600*9 + 120, OutboxPending: g.outbox,
-			RemoteAddr: "100.101.0.10",
+			AppVersion: "3.1.4", SDKVersion: "0.3.0", UptimeS: 3600*9 + 120, OutboxPending: g.outbox,
+			RemoteAddr: "100.101.0.10", Platform: platformFor(g),
 		}); err != nil {
 			return err
+		}
+		// Status history as the tracker would have written it: online since
+		// the morning start, then STALE/DOWN at the thresholds after the last
+		// contact for gates that went quiet.
+		lastSeen := now.Add(-g.lastSeenAgo)
+		changes := []struct {
+			status string
+			at     time.Time
+		}{{"DOWN", lastSeen.Add(-9 * time.Hour).Add(-20 * time.Minute)}, {"ONLINE", lastSeen.Add(-9 * time.Hour)}}
+		if g.lastSeenAgo > 3*time.Minute {
+			changes = append(changes, struct {
+				status string
+				at     time.Time
+			}{"STALE", lastSeen.Add(3 * time.Minute)})
+		}
+		if g.lastSeenAgo > 10*time.Minute {
+			changes = append(changes, struct {
+				status string
+				at     time.Time
+			}{"DOWN", lastSeen.Add(10 * time.Minute)})
+		}
+		for _, c := range changes {
+			if err := db.RecordStatus(g.id, c.status, c.at.Format(time.RFC3339)); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -275,8 +325,8 @@ func runHeartbeats(base string, gates []gate) {
 			if !g.live {
 				continue
 			}
-			body, _ := json.Marshal(map[string]any{"device_id": g.id, "app_version": "3.1.4", "sdk_version": "0.2.0",
-				"uptime_s": 3600 * 9, "outbox_pending": g.outbox})
+			body, _ := json.Marshal(map[string]any{"device_id": g.id, "app_version": "3.1.4", "sdk_version": "0.3.0",
+				"uptime_s": 3600 * 9, "outbox_pending": g.outbox, "platform": platformFor(g)})
 			req, _ := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(base, "/")+"/v1/heartbeat", bytes.NewReader(body))
 			req.Header.Set("Authorization", "Bearer demo-token-"+g.id)
 			if resp, err := client.Do(req); err == nil {

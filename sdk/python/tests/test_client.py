@@ -176,6 +176,10 @@ class DeliveryTest(Base):
         gaps = [e for e in a.events() if e["event"] == "SENTINEL_GAP"]
         self.assertEqual(len(gaps), 1)
         self.assertEqual(gaps[0]["context"]["dropped"], 0)
+        # The event held during the outage is counted, even though it was
+        # delivered by the very request that ended the outage.
+        self.assertEqual(gaps[0]["context"]["pending_at_reconnect"], 1)
+        self.assertIn("1 event(s) held", gaps[0]["message"])
         self.assertNotIn("severity", gaps[0])  # nothing lost → registry default (INFO)
 
     def test_batch_404_falls_back_to_single_posts(self):
@@ -358,3 +362,52 @@ class HeartbeatTest(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExceptionTest(Base):
+    def test_exception_sends_stack_without_locals(self):
+        a = self.agent()
+        c = self.client(a.url)
+        secret_card = "6032980000001234"  # noqa: F841 — must never appear in the payload
+
+        def debit(card):
+            raise RuntimeError("reader not ready")
+
+        try:
+            debit(secret_card)
+        except RuntimeError:
+            c.exception()
+        self.assertTrue(c.flush())
+        (ev,) = a.events()
+        self.assertEqual(ev["event"], "APP_EXCEPTION")
+        self.assertEqual(ev["message"], "RuntimeError: reader not ready")
+        self.assertIn("in debit", ev["stack"])
+        self.assertIn("test_client.py", ev["stack"])
+        self.assertTrue(ev["stack"].rstrip().endswith("RuntimeError: reader not ready"))
+        self.assertNotIn(secret_card, json.dumps(ev))
+
+    def test_exception_with_explicit_exc_and_event(self):
+        a = self.agent()
+        c = self.client(a.url)
+        c.exception(ValueError("bad"), event="PAYMENT_TIMEOUT", message="custom", endpoint_hint="x")
+        self.assertTrue(c.flush())
+        (ev,) = a.events()
+        self.assertEqual(ev["event"], "PAYMENT_TIMEOUT")
+        self.assertEqual(ev["message"], "custom")
+        self.assertTrue(ev["stack"].rstrip().endswith("ValueError: bad"))
+        self.assertEqual(ev["context"], {"endpoint_hint": "x"})
+
+    def test_exception_outside_except_is_ignored(self):
+        a = self.agent()
+        c = self.client(a.url)
+        c.exception()
+        self.assertTrue(c.flush())
+        self.assertEqual(a.events(), [])
+
+    def test_heartbeat_carries_platform(self):
+        a = self.agent()
+        c = self.client(a.url, heartbeat_interval=0.1, platform="tongbao")
+        c.beat()
+        _wait(lambda: "/v1/heartbeat" in a.paths())
+        hb = [r[1] for r in a.requests if r[0] == "/v1/heartbeat"][0]
+        self.assertEqual(hb["platform"], "tongbao")

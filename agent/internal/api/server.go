@@ -88,6 +88,16 @@ const maxBatch = 100
 // maxEventName bounds event names, which the registry keeps for good.
 const maxEventName = 128
 
+// maxStack bounds a traceback; the top frames are what matter.
+const maxStack = 16 * 1024
+
+// catchAllPrefix marks events a kiosk's logging handler forwards for every
+// logger.warning/error (LOG_<logger>__<function>). A warning there is
+// usually a configuration or environment note, not a gate fault, so it is
+// kept but demoted to LOW and never colours a gate; errors stay HIGH so a
+// code failure is still visible.
+const catchAllPrefix = "LOG_"
+
 // ingestResult is the outcome of storing one event.
 type ingestResult struct {
 	Event     model.StoredEvent
@@ -242,7 +252,7 @@ func (s *Server) ingestOne(deviceEntry devices.Entry, in model.IncomingEvent) in
 		entry, isNew = s.reg.Allocate(in.Event, category, code, in.Severity)
 		switch {
 		case isNew:
-			if err := s.db.SaveCustomRegistryEntry(entry); err != nil {
+			if err := s.db.SaveCustomRegistryEntry(entry, false); err != nil {
 				log.Printf("warning: failed to persist learned event %q: %v", in.Event, err)
 			} else {
 				log.Printf("learned new event %q -> %s-%s-%s-%03d", in.Event, location, gate, entry.Code, entry.Number)
@@ -268,6 +278,12 @@ func (s *Server) ingestOne(deviceEntry devices.Entry, in model.IncomingEvent) in
 			}
 			in.Context["severity_hint"] = in.Severity
 		}
+	}
+	if severity == "MEDIUM" && strings.HasPrefix(in.Event, catchAllPrefix) {
+		severity = "LOW"
+	}
+	if r := []rune(in.Stack); len(r) > maxStack {
+		in.Stack = string(r[:maxStack]) + "\n… (dipotong)"
 	}
 
 	appVersion := in.AppVersion
@@ -306,6 +322,7 @@ func (s *Server) ingestOne(deviceEntry devices.Entry, in model.IncomingEvent) in
 		Context:    in.Context,
 		AppVersion: appVersion,
 		ReceivedAt: receivedAt,
+		Stack:      in.Stack,
 	}
 
 	id, err := s.db.InsertEvent(ev)
@@ -355,6 +372,7 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		OutboxPending:   hb.OutboxPending,
 		OutboxDropped:   hb.OutboxDropped,
 		RemoteAddr:      remoteIP(r),
+		Platform:        strings.ToLower(strings.TrimSpace(hb.Platform)),
 	}
 	if err := s.db.UpsertHeartbeat(st); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())

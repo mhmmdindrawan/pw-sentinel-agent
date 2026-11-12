@@ -26,6 +26,9 @@ type IncomingEvent struct {
 	HTTPStatus *int           `json:"http_status,omitempty"`
 	DurationMS *int           `json:"duration_ms,omitempty"`
 	Context    map[string]any `json:"context,omitempty"`
+	// Stack is a formatted traceback: file, function and line per frame,
+	// never local variable values (docs/protocol-v1.md).
+	Stack string `json:"stack,omitempty"`
 }
 
 // StoredEvent is the fully normalized record persisted to SQLite and
@@ -52,6 +55,7 @@ type StoredEvent struct {
 	Context    map[string]any `json:"context,omitempty"`
 	AppVersion string         `json:"app_version,omitempty"`
 	ReceivedAt string         `json:"received_at"`
+	Stack      string         `json:"stack,omitempty"`
 }
 
 // SummaryRow is one aggregated row for the /v1/summary endpoint.

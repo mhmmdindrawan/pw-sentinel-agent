@@ -45,9 +45,24 @@ export function fmtDuration(sec) {
 
 export const STATUS_TEXT = { ONLINE: "Online", STALE: "Terlambat", DOWN: "Mati", NEVER: "Belum pernah lapor" };
 export const COLOR_TEXT = { red: "Bermasalah", yellow: "Perhatian", green: "Normal" };
+export const PLATFORM_TEXT = { tongbao: "Tongbao", windows: "Windows", linux: "Linux" };
 
 // statusLabel is what a gate's badge says: liveness when it isn't simply
 // online, otherwise the health colour.
 export function statusLabel(d) {
   return d.status === "ONLINE" ? COLOR_TEXT[d.color] : STATUS_TEXT[d.status] || d.status;
+}
+
+// fmtSinceDuration: how long a state has lasted, e.g. "12 mnt", "3 jam 5 mnt".
+export function fmtSinceDuration(iso) {
+  if (!iso) return "";
+  const s = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+  if (s < 60) return s + " dtk";
+  if (s < 3600) return Math.floor(s / 60) + " mnt";
+  if (s < 86400) return Math.floor(s / 3600) + " jam " + Math.floor((s % 3600) / 60) + " mnt";
+  return Math.floor(s / 86400) + " hari " + Math.floor((s % 86400) / 3600) + " jam";
+}
+
+export function platformLabel(p) {
+  return p ? PLATFORM_TEXT[p] || p : "";
 }

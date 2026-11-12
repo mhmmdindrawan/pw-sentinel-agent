@@ -148,7 +148,7 @@ function skeletonRows(cols) {
 function eventRows(e, showDevice, cols) {
   const detailId = "ev-" + e.id;
   const detail = h("tr", { class: "detail", id: detailId, hidden: true },
-    h("td", { colspan: cols }, h("pre", { class: "ctx", text: JSON.stringify(eventDetail(e), null, 2) })));
+    h("td", { colspan: cols }, detailPanel(e)));
   const toggle = h("button", { type: "button", class: "expand", "aria-expanded": "false", "aria-controls": detailId,
     "aria-label": "Detail event " + e.event });
   toggle.append(h("span", { "aria-hidden": "true", text: "▸" }));
@@ -178,11 +178,80 @@ function eventRows(e, showDevice, cols) {
   return [row, detail];
 }
 
-function eventDetail(e) {
-  const out = {};
-  for (const k of ["event_id", "device_id", "device", "occurred_at", "received_at", "message", "endpoint", "http_status",
-    "duration_ms", "retry_count", "transaction_ref", "app_version", "context"]) {
-    if (e[k] != null && e[k] !== "") out[k] = e[k];
+// Field labels for the detail panel, in display order. Anything else the
+// agent returns (context, stack) gets its own block below the list.
+const FIELDS = [
+  ["message", "Pesan"], ["occurred_at", "Terjadi di kiosk", fmtTime], ["received_at", "Diterima agent", fmtTime],
+  ["device_id", "Device"], ["device", "Perangkat"], ["app_version", "Versi aplikasi"],
+  ["endpoint", "Endpoint"], ["http_status", "HTTP status"], ["duration_ms", "Durasi", (v) => v + " ms"],
+  ["retry_count", "Percobaan ulang"], ["transaction_ref", "Ref. transaksi"], ["event_id", "Event ID"],
+];
+
+// detailPanel is what NOC reads when they open a row: labelled fields, the
+// extra context the kiosk attached, and (for exceptions) the stack trace.
+// "Salin untuk debugging" copies all of it as Markdown so it can be pasted
+// into a chat, an issue, or an AI assistant unchanged.
+function detailPanel(e) {
+  const dl = h("dl", { class: "ev-fields" });
+  for (const [k, label, fmt] of FIELDS) {
+    if (e[k] == null || e[k] === "") continue;
+    dl.append(h("div", {}, h("dt", { text: label }), h("dd", { class: k === "message" ? "" : "mono", text: fmt ? fmt(e[k]) : String(e[k]) })));
   }
-  return out;
+  const parts = [h("div", { class: "ev-head" },
+    h("span", { class: "mono", text: e.error_code }), " ", h("b", { text: e.event }),
+    copyButton(e))];
+  parts.push(dl);
+  if (e.context && Object.keys(e.context).length) {
+    parts.push(h("div", { class: "ev-block" }, h("div", { class: "ev-label", text: "Konteks" }),
+      h("pre", { class: "ctx", text: JSON.stringify(e.context, null, 2) })));
+  }
+  if (e.stack) {
+    parts.push(h("div", { class: "ev-block" }, h("div", { class: "ev-label", text: "Stack trace (baris kode yang gagal ada di paling bawah)" }),
+      h("pre", { class: "ctx stack", text: e.stack })));
+  }
+  return h("div", { class: "ev-detail" }, ...parts);
+}
+
+function copyButton(e) {
+  const btn = h("button", { type: "button", class: "link small copy", text: "Salin untuk debugging" });
+  btn.addEventListener("click", async (ev) => {
+    ev.stopPropagation();
+    const text = debugMarkdown(e);
+    let ok = false;
+    try { await navigator.clipboard.writeText(text); ok = true; } catch (_) { /* no clipboard permission */ }
+    if (!ok) {
+      // Fallback: offer the text in a selectable box next to the button.
+      const ta = h("textarea", { class: "copy-fallback", readonly: true, "aria-label": "Teks untuk disalin" });
+      ta.value = text;
+      btn.after(ta);
+      ta.select();
+    }
+    setText(btn, ok ? "Tersalin ✓" : "Salin manual dari kotak");
+    setTimeout(() => setText(btn, "Salin untuk debugging"), 2500);
+  });
+  return btn;
+}
+
+// debugMarkdown has everything a developer needs to start on a bug: which
+// gate, which version, when, the message, the context, the stack — plus a
+// link back to the gate's timeline around that moment.
+export function debugMarkdown(e) {
+  const when = e.occurred_at || e.received_at;
+  const lines = [
+    `## ${e.error_code} · ${e.event} (${e.severity})`,
+    "",
+    `- Gate: ${e.location} ${e.gate}${e.pos ? " " + e.pos : ""} (device_id \`${e.device_id}\`)`,
+    `- Waktu: ${fmtTime(when)} (${when})`,
+    e.app_version ? `- Versi aplikasi: ${e.app_version}` : null,
+    e.message ? `- Pesan: ${e.message}` : null,
+    e.endpoint ? `- Endpoint: ${e.endpoint}${e.http_status != null ? " → HTTP " + e.http_status : ""}${e.duration_ms != null ? " (" + e.duration_ms + " ms)" : ""}` : null,
+    e.transaction_ref ? `- Ref. transaksi: ${e.transaction_ref}` : null,
+    `- Event ID: ${e.event_id}`,
+    `- Timeline gate: ${location.origin}${location.pathname}#/device/${encodeURIComponent(e.device_id)}`,
+  ].filter((l) => l !== null);
+  if (e.context && Object.keys(e.context).length) {
+    lines.push("", "Konteks:", "```json", JSON.stringify(e.context, null, 2), "```");
+  }
+  if (e.stack) lines.push("", "Stack trace:", "```", e.stack.trimEnd(), "```");
+  return lines.join("\n") + "\n";
 }

@@ -25,22 +25,32 @@ events:
     code: APP
     number: 2
     severity: CRITICAL
+  APP_EXCEPTION:      # unhandled exception with a stack trace (SDK client.exception())
+    category: APP
+    code: APP
+    number: 3
+    severity: HIGH
 
-  PAYMENT_REJECTED:
+  PAYMENT_REJECTED:   # customer behaviour, not a fault: never colours a gate
     category: PAY
     code: PAY
     number: 1
-    severity: MEDIUM
+    severity: LOW
   PAYMENT_TIMEOUT:
     category: PAY
     code: PAY
     number: 2
     severity: HIGH
-  INSUFFICIENT_BALANCE:
+  INSUFFICIENT_BALANCE:   # customer behaviour, not a fault
     category: PAY
     code: PAY
     number: 3
-    severity: MEDIUM
+    severity: LOW
+  QRIS_NOT_CONFIGURED:    # QRIS secret missing in the kiosk config
+    category: PAY
+    code: PAY
+    number: 4
+    severity: LOW
 
   READER_DISCONNECTED:
     category: READER
@@ -79,6 +89,11 @@ events:
     code: LPR
     number: 1
     severity: MEDIUM
+  LPR_NO_FEED:        # camera never pushed a frame to the kiosk's LPR port
+    category: LPR
+    code: LPR
+    number: 2
+    severity: LOW
 
   CCTV_DISCONNECTED:
     category: CCTV
@@ -96,6 +111,11 @@ events:
     code: MQTT
     number: 2
     severity: HIGH
+  MQTT_DISABLED:      # MQTT not configured: normal on Windows/Linux, a fault on Tongbao
+    category: MQTT
+    code: MQTT
+    number: 3
+    severity: INFO
 
   NETWORK_DISCONNECTED:
     category: NETWORK
@@ -135,6 +155,16 @@ events:
     code: DEVICE
     number: 1
     severity: MEDIUM
+  GATE_OPEN_FAILED:   # barrier command failed: the gate cannot let cars out
+    category: DEVICE
+    code: DEVICE
+    number: 2
+    severity: HIGH
+  PCLESS_DISCONNECTED:  # PCLess barrier controller unreachable
+    category: DEVICE
+    code: DEVICE
+    number: 3
+    severity: HIGH
 
   SYSTEM_ERROR:
     category: SYSTEM

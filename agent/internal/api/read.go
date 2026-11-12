@@ -43,6 +43,10 @@ func (s *Server) Fleet(now time.Time) ([]model.FleetDevice, error) {
 	if err != nil {
 		return nil, err
 	}
+	since, err := s.db.LatestStatuses()
+	if err != nil {
+		return nil, err
+	}
 
 	out := []model.FleetDevice{}
 	for _, d := range all {
@@ -55,7 +59,7 @@ func (s *Server) Fleet(now time.Time) ([]model.FleetDevice, error) {
 		}
 		live := status.Derive(now, seen, th)
 		es := stats[d.DeviceID]
-		out = append(out, model.FleetDevice{
+		fd := model.FleetDevice{
 			DeviceID:         d.DeviceID,
 			Location:         d.Location,
 			Gate:             d.Gate,
@@ -65,7 +69,13 @@ func (s *Server) Fleet(now time.Time) ([]model.FleetDevice, error) {
 			LastSeen:         lastSeen,
 			DeviceState:      st,
 			DeviceErrorStats: es,
-		})
+		}
+		// Only trust the recorded "since" while it describes the current
+		// status; between tracker ticks the two can briefly disagree.
+		if c := since[d.DeviceID]; c.Status == fd.Status {
+			fd.StatusSince = c.Since
+		}
+		out = append(out, fd)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		return status.ColorRank(status.Color(out[i].Color)) < status.ColorRank(status.Color(out[j].Color))
@@ -130,10 +140,16 @@ func (s *Server) handleDevice(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		history, err := s.db.StatusHistory(id, 20)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"device":      d,
-			"summary_24h": summary,
-			"hourly_24h":  hourly,
+			"device":         d,
+			"summary_24h":    summary,
+			"hourly_24h":     hourly,
+			"status_history": history,
 		})
 		return
 	}

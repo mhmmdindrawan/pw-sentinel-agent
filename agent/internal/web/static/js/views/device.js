@@ -5,8 +5,8 @@
 import { h, setText } from "../core/dom.js";
 import { api, ApiError } from "../core/api.js";
 import { Poller } from "../core/poller.js";
-import { nf, fmtTime, fmtDuration, STATUS_TEXT, statusLabel } from "../core/format.js";
-import { agoEl, setAgo } from "../core/ticker.js";
+import { nf, fmtTime, fmtDuration, fmtSinceDuration, STATUS_TEXT, statusLabel, platformLabel } from "../core/format.js";
+import { agoEl, setAgo, sinceEl, setSince } from "../core/ticker.js";
 import { statusBadge, sevBadge } from "../ui/badges.js";
 import { tile } from "../ui/tile.js";
 import { hourlyChart } from "../ui/chart.js";
@@ -33,18 +33,21 @@ export function mount(root, params, ctx) {
   };
   const seenAgo = agoEl("");
   const seenAbs = h("span");
+  const statusSince = sinceEl("", "muted small");
 
   const chart = hourlyChart();
   const summaryBox = h("div", { class: "panel table-wrap" }, h("p", { class: "muted", text: "Memuat…" }));
+  const historyBox = h("div", { class: "panel table-wrap" }, h("p", { class: "muted", text: "Memuat…" }));
   const events = eventList({ fixed: { device_id: id }, onAuthError: ctx.onAuthError });
 
   const body = h("div", {},
     h("div", { class: "tiles" }, tErr1, tErr24, tOutbox, tUptime),
     h("div", { class: "panel" }, h("dl", { class: "dl" },
-      infoItem("status", "Status"),
+      h("div", {}, h("dt", { text: "Status" }), h("dd", {}, (info.status = h("span", { class: "skeleton-text", text: "—————" })), " ", statusSince)),
       h("div", {}, h("dt", { text: "Terakhir terlihat" }), h("dd", {}, seenAgo, " ", seenAbs)),
       infoItem("hb", "Heartbeat terakhir"),
       infoItem("ev", "Event terakhir"),
+      infoItem("platform", "Platform"),
       infoItem("app", "Versi aplikasi"),
       infoItem("sdk", "Versi SDK"),
       infoItem("addr", "Alamat"),
@@ -53,6 +56,8 @@ export function mount(root, params, ctx) {
     h("div", { class: "panel" }, chart),
     h("h2", { text: "Ringkasan kode error (24 jam)" }),
     summaryBox,
+    h("h2", { text: "Riwayat status" }),
+    historyBox,
     h("h2", { text: "Timeline event" }),
     events.el);
 
@@ -62,7 +67,7 @@ export function mount(root, params, ctx) {
       h("div", { class: "title-row" }, title, badge), sub)),
     body);
 
-  let summaryKey = "";
+  let summaryKey = "", historyKey = "";
   function apply(data) {
     if (data.notFound) {
       poller.stop();
@@ -84,10 +89,12 @@ export function mount(root, params, ctx) {
 
     const set = (k, v) => { info[k].classList.remove("skeleton-text"); setText(info[k], v); };
     set("status", STATUS_TEXT[d.status] || d.status);
+    setSince(statusSince, d.status_since, "sejak");
     setAgo(seenAgo, d.last_seen);
     setText(seenAbs, d.last_seen ? "(" + fmtTime(d.last_seen) + ")" : "");
     set("hb", fmtTime(d.last_heartbeat_at));
     set("ev", fmtTime(d.last_event_at));
+    set("platform", platformLabel(d.platform) || "—");
     set("app", d.app_version || "—");
     set("sdk", d.sdk_version || "—");
     set("addr", d.remote_addr || "—");
@@ -98,6 +105,11 @@ export function mount(root, params, ctx) {
     if (k !== summaryKey) {
       summaryKey = k;
       summaryBox.replaceChildren(summaryTable(data.summary_24h || [], d.device_id));
+    }
+    const hk = JSON.stringify(data.status_history || []);
+    if (hk !== historyKey) {
+      historyKey = hk;
+      historyBox.replaceChildren(historyTable(data.status_history || []));
     }
     events.noticeNewer(d.last_event_at);
   }
@@ -112,6 +124,24 @@ export function mount(root, params, ctx) {
   }, { interval: INTERVAL, onData: apply, onAuthError: ctx.onAuthError }).start();
 
   return { poller, destroy: () => { poller.stop(); events.destroy(); } };
+}
+
+// historyTable lists liveness changes newest first, each with how long that
+// state lasted (until the next change, or until now for the current one).
+function historyTable(rows) {
+  if (!rows.length) return h("p", { class: "muted", text: "Belum ada perubahan status tercatat." });
+  return h("table", {},
+    h("thead", {}, h("tr", {}, ["Status", "Mulai", "Lama"].map((t) => h("th", { scope: "col", text: t })))),
+    h("tbody", {}, rows.map((r, i) => {
+      const end = i === 0 ? null : rows[i - 1].since;
+      const lasted = end
+        ? fmtSinceDuration(new Date(Date.now() - (new Date(end) - new Date(r.since))).toISOString())
+        : fmtSinceDuration(r.since) + " (sekarang)";
+      return h("tr", {},
+        h("td", {}, statusBadge(r.status === "ONLINE" ? "green" : r.status === "STALE" ? "yellow" : "red", STATUS_TEXT[r.status] || r.status)),
+        h("td", { text: fmtTime(r.since) }),
+        h("td", { text: lasted }));
+    })));
 }
 
 function summaryTable(rows, deviceId) {

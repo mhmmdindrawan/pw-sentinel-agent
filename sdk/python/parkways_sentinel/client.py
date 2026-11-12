@@ -39,17 +39,23 @@ is meant to run unmodified on kiosks stuck on that interpreter.
 
 import json
 import queue
+import sys
 import threading
 import time
+import traceback
 import urllib.error
 import urllib.request
 import uuid
 from datetime import datetime, timezone
 
-from .events import HIGH_PRIORITY, SENTINEL_GAP
+from .events import APP_EXCEPTION, HIGH_PRIORITY, SENTINEL_GAP
 from .outbox import MemoryOutbox, SqliteOutbox
 
-SDK_VERSION = "0.2.0"
+SDK_VERSION = "0.3.0"
+
+# Frames kept from a traceback (innermost last); enough to locate a bug
+# without shipping the whole call chain.
+_MAX_STACK_FRAMES = 30
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8787"
 DEFAULT_TIMEOUT = 2.0
@@ -76,6 +82,27 @@ def _now_iso():
     return datetime.now(timezone.utc).isoformat()
 
 
+def _default_platform():
+    p = sys.platform
+    if p.startswith("win"):
+        return "windows"
+    if p.startswith("linux"):
+        return "linux"
+    return p
+
+
+def format_stack(etype, value, tb):
+    """Format a traceback the way Python prints it, limited to the innermost
+    _MAX_STACK_FRAMES frames. Local variables are never included (the
+    standard formatter doesn't render them), so card data, balances and
+    credentials held in variables can't leak into Sentinel."""
+    frames = traceback.extract_tb(tb)[-_MAX_STACK_FRAMES:] if tb is not None else []
+    lines = ["Traceback (most recent call last):\n"] if frames else []
+    lines.extend(traceback.format_list(frames))
+    lines.extend(traceback.format_exception_only(etype, value))
+    return "".join(lines)
+
+
 class SentinelClient:
     def __init__(
         self,
@@ -93,6 +120,7 @@ class SentinelClient:
         heartbeat_interval=60.0,
         max_backoff=60.0,
         batch_size=50,
+        platform=None,
     ):
         """`device_id` must uniquely and stably identify this kiosk/gate
         machine and must correspond to an entry (and its token) in the
@@ -109,8 +137,13 @@ class SentinelClient:
         `outbox_path`: a SQLite file to keep undelivered events across app
         restarts. None keeps them in memory only. If the file can't be
         opened or written, the client falls back to memory and reports the
-        error through on_send_error."""
+        error through on_send_error.
+
+        `platform` names the product variant for the dashboard ("tongbao",
+        "windows", "linux"). Defaults to the OS name; a Tongbao kiosk
+        should pass "tongbao" so MQTT-related events are read in context."""
         self._device_id = device_id
+        self._platform = platform or _default_platform()
         base = base_url.rstrip("/")
         self._url_event = base + "/v1/events"
         self._url_batch = base + "/v1/events/batch"
@@ -136,6 +169,7 @@ class SentinelClient:
         self._offline_since = None  # wall clock of the first failure in a row
         self._dropped = 0  # events discarded since start (queue/outbox full, expired, rejected)
         self._dropped_at_offline = 0
+        self._pending_at_reconnect = 0  # outbox size just before the first request that succeeds again
 
         self._coalesce_window = coalesce_window
         self._coalesce_lock = threading.Lock()
@@ -170,10 +204,12 @@ class SentinelClient:
         http_status=None,
         duration_ms=None,
         app_version=None,
+        stack=None,
         **context,
     ):
         """Report a single event. Extra keyword arguments are sent as
-        free-form context (e.g. reader_id="READER01", latency_ms=2840)."""
+        free-form context (e.g. reader_id="READER01", latency_ms=2840).
+        `stack` is a preformatted traceback (see exception())."""
         payload = {
             "event": event,
             "device_id": self._device_id,
@@ -182,6 +218,8 @@ class SentinelClient:
         }
         if message is not None:
             payload["message"] = message
+        if stack:
+            payload["stack"] = stack
         if category is not None:
             payload["category"] = category
         if severity is not None:
@@ -227,6 +265,33 @@ class SentinelClient:
             http_status=status_code,
             duration_ms=duration_ms,
             message=message,
+            **context,
+        )
+
+    def exception(self, exc=None, event=None, message=None, severity=None, **context):
+        """Report an exception with its traceback so a developer can find
+        the failing line from the dashboard. Call it from an `except` block;
+        `exc` defaults to the exception being handled. Only file, function
+        and line per frame are sent — never local variable values. `event`
+        defaults to APP_EXCEPTION (HIGH)."""
+        try:
+            etype, value, tb = sys.exc_info()
+            if exc is not None:
+                etype, value, tb = type(exc), exc, getattr(exc, "__traceback__", None)
+            if value is None and exc is None:
+                return  # not inside an except block and nothing passed
+            stack = format_stack(etype, value, tb)
+            if message is None:
+                message = "%s: %s" % (etype.__name__, value)
+                if len(message) > 500:
+                    message = message[:500] + "…"
+        except Exception:
+            stack, message = None, message or "exception (traceback unavailable)"
+        self.error(
+            event=event or APP_EXCEPTION,
+            message=message,
+            severity=severity,
+            stack=stack,
             **context,
         )
 
@@ -429,6 +494,8 @@ class SentinelClient:
             rows = self._outbox.peek(n)
             if not rows:
                 return
+            if self._offline_since is not None:
+                self._pending_at_reconnect = self.pending()
             try:
                 if len(rows) > 1:
                     done, retry = self._send_batch(rows)
@@ -501,9 +568,12 @@ class SentinelClient:
             "outbox_pending": self.pending(),
             "outbox_dropped": self._dropped,
             "sent_at": _now_iso(),
+            "platform": self._platform,
         }
         if self._app_version:
             body["app_version"] = self._app_version
+        if self._offline_since is not None:
+            self._pending_at_reconnect = self.pending()
         try:
             self._post(self._url_heartbeat, body)
         except urllib.error.HTTPError as exc:
@@ -557,14 +627,18 @@ class SentinelClient:
             return
         offline_s = int(time.time() - self._offline_since)
         lost = self._dropped - self._dropped_at_offline
+        # Measured before the request that just succeeded, so the events it
+        # delivered are counted as "held" rather than already gone.
+        held = self._pending_at_reconnect
         self._offline_since = None
+        self._pending_at_reconnect = 0
         gap = {
             "event": SENTINEL_GAP,
             "device_id": self._device_id,
             "event_id": str(uuid.uuid4()),
             "occurred_at": _now_iso(),
-            "message": "agent unreachable for %ds; %d event(s) waiting, %d lost" % (offline_s, self.pending(), lost),
-            "context": {"offline_seconds": offline_s, "pending_at_reconnect": self.pending(), "dropped": lost},
+            "message": "agent unreachable for %ds; %d event(s) held and now delivered, %d lost" % (offline_s, held, lost),
+            "context": {"offline_seconds": offline_s, "pending_at_reconnect": held, "dropped": lost},
         }
         if lost:
             gap["severity"] = "MEDIUM"

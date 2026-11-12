@@ -47,6 +47,14 @@ Body fields:
 | `http_status`      | int    | no | |
 | `duration_ms`      | int    | no | |
 | `context`          | object | no | Free-form extra key/value context. |
+| `stack`            | string | no | A formatted traceback: file, function and line per frame, innermost last — **never local variable values**. Stored as sent (cut at 16 KiB) and shown on the dashboard's event detail. The Python SDK fills it from `client.exception()`. |
+
+**Catch-all log events.** An event whose name starts with `LOG_` (the kiosk
+logging handler forwarding every `logger.warning`/`error`) is kept but, when
+its severity resolves to MEDIUM, demoted to **LOW** so it never colours a
+gate: in the field these are configuration notes (MQTT off, LPR not sending,
+QRIS secret missing), not faults. `ERROR`-level ones stay HIGH so a code
+failure is still visible. Name the recurring ones as registry events instead.
 
 ## Auth and device resolution
 
@@ -143,6 +151,7 @@ heartbeating and shows up as STALE/DOWN.
 | `outbox_pending` | int    | Events queued on the kiosk, not yet delivered. A non-zero value colours the gate yellow. |
 | `outbox_dropped` | int    | Events the SDK discarded since it started (queue/outbox full). |
 | `sent_at`        | string (RFC3339) | Client clock; informational. |
+| `platform`       | string | Product variant/OS: `tongbao` (MQTT + hardware, Lubuntu ARM), `windows`, `linux`. Lower-cased by the agent, kept until the next value. Shown on the gate card so MQTT events are read in context. |
 
 Response **200** `{"status": "ok", "server_time": "<RFC3339>"}`. Heartbeats
 are not stored as events; they update the device's row in `device_state`.
@@ -161,7 +170,17 @@ don't count). With the default thresholds (`status:` in config.yaml):
 
 Gate colour: **red** if DOWN/NEVER or a HIGH/CRITICAL event in the last 10
 minutes; **yellow** if STALE, a MEDIUM event in the last 10 minutes, or
-`outbox_pending > 0`; otherwise **green**.
+`outbox_pending > 0`; otherwise **green**. INFO and LOW never colour a gate.
+
+### Status history
+
+Every 30 s the agent records liveness changes in `status_history`. Each
+fleet/device row carries `status_since` (RFC3339, when the current status
+began) and `GET /v1/devices/{id}` adds `status_history` (last 20 changes,
+newest first), which is what "Mati sejak 10:58" and the gate's "Riwayat
+status" table are built from. For one stale period after the agent starts
+only ONLINE is recorded, since every kiosk looks DOWN until it heartbeats.
+`NEVER` is not recorded.
 
 ## Read API (dashboard)
 

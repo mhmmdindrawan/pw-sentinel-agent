@@ -50,8 +50,40 @@ func Open(dbPath string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
+	// Columns added after the first release: CREATE TABLE IF NOT EXISTS
+	// leaves an existing table alone, so they are added here.
+	for _, m := range []struct{ table, column, typ string }{
+		{"events", "stack", "TEXT"},
+		{"device_state", "platform", "TEXT"},
+	} {
+		if err := ensureColumn(db, m.table, m.column, m.typ); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
 
 	return &Store{db: db}, nil
+}
+
+func ensureColumn(db *sql.DB, table, column, typ string) error {
+	rows, err := db.Query(`SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return fmt.Errorf("inspect %s: %w", table, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if _, err := db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + column + ` ` + typ); err != nil {
+		return fmt.Errorf("add column %s.%s: %w", table, column, err)
+	}
+	return nil
 }
 
 func (s *Store) Close() error {
@@ -74,13 +106,13 @@ func (s *Store) InsertEvent(ev model.StoredEvent) (int64, error) {
 			device_id, event_id, occurred_at,
 			location, gate, pos, device, category, error_code, event_name,
 			severity, message, transaction_ref, retry_count, endpoint,
-			http_status, duration_ms, context_json, app_version, received_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			http_status, duration_ms, context_json, app_version, received_at, stack
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		ev.DeviceID, nullable(ev.EventID), nullable(ev.OccurredAt),
 		ev.Location, ev.Gate, nullable(ev.POS), nullable(ev.Device), ev.Category,
 		ev.ErrorCode, ev.Event, ev.Severity, nullable(ev.Message), nullable(ev.TxRef),
 		ev.RetryCount, nullable(ev.Endpoint), ev.HTTPStatus, ev.DurationMS,
-		contextJSON, nullable(ev.AppVersion), ev.ReceivedAt,
+		contextJSON, nullable(ev.AppVersion), ev.ReceivedAt, nullable(ev.Stack),
 	)
 	if err != nil {
 		return 0, fmt.Errorf("insert event: %w", err)
@@ -91,20 +123,21 @@ func (s *Store) InsertEvent(ev model.StoredEvent) (int64, error) {
 const eventColumns = `
 	id, device_id, event_id, occurred_at, location, gate, pos, device, category,
 	error_code, event_name, severity, message, transaction_ref, retry_count,
-	endpoint, http_status, duration_ms, context_json, app_version, received_at`
+	endpoint, http_status, duration_ms, context_json, app_version, received_at, stack`
 
 // scanEvent scans one row shaped like eventColumns into a StoredEvent.
 func scanEvent(row interface{ Scan(...any) error }) (model.StoredEvent, error) {
 	var ev model.StoredEvent
-	var eventID, occurredAt, pos, device, message, txRef, endpoint, appVersion, contextJSON sql.NullString
+	var eventID, occurredAt, pos, device, message, txRef, endpoint, appVersion, contextJSON, stack sql.NullString
 	var retryCount, httpStatus, durationMS sql.NullInt64
 
 	if err := row.Scan(&ev.ID, &ev.DeviceID, &eventID, &occurredAt, &ev.Location, &ev.Gate, &pos, &device,
 		&ev.Category, &ev.ErrorCode, &ev.Event, &ev.Severity, &message, &txRef, &retryCount,
-		&endpoint, &httpStatus, &durationMS, &contextJSON, &appVersion, &ev.ReceivedAt); err != nil {
+		&endpoint, &httpStatus, &durationMS, &contextJSON, &appVersion, &ev.ReceivedAt, &stack); err != nil {
 		return ev, fmt.Errorf("scan event: %w", err)
 	}
 
+	ev.Stack = stack.String
 	ev.EventID = eventID.String
 	ev.OccurredAt = occurredAt.String
 	ev.POS = pos.String
@@ -305,11 +338,18 @@ func (s *Store) LoadCustomRegistry() ([]registry.Entry, error) {
 	return out, rows.Err()
 }
 
-func (s *Store) SaveCustomRegistryEntry(e registry.Entry) error {
+// SaveCustomRegistryEntry persists a learned allocation. A concurrent
+// first-sight allocation keeps the first row; overwrite is only for the
+// startup reconciliation against a newer registry.yaml.
+func (s *Store) SaveCustomRegistryEntry(e registry.Entry, overwrite bool) error {
+	conflict := "DO NOTHING"
+	if overwrite {
+		conflict = "DO UPDATE SET category = excluded.category, code = excluded.code, number = excluded.number, severity = excluded.severity"
+	}
 	_, err := s.db.Exec(`
 		INSERT INTO event_registry (event_name, category, code, number, severity)
 		VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT(event_name) DO NOTHING`,
+		ON CONFLICT(event_name) `+conflict,
 		e.EventName, e.Category, e.Code, e.Number, e.Severity)
 	if err != nil {
 		return fmt.Errorf("save event_registry entry: %w", err)

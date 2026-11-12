@@ -19,7 +19,8 @@ CREATE TABLE IF NOT EXISTS events (
     duration_ms     INTEGER,
     context_json    TEXT,
     app_version     TEXT,
-    received_at     TEXT NOT NULL
+    received_at     TEXT NOT NULL,
+    stack           TEXT            -- frames only, never local variables
 );
 
 CREATE INDEX IF NOT EXISTS idx_events_error_code   ON events(error_code);
@@ -55,8 +56,19 @@ CREATE TABLE IF NOT EXISTS device_state (
     uptime_s          INTEGER NOT NULL DEFAULT 0,
     outbox_pending    INTEGER NOT NULL DEFAULT 0,
     outbox_dropped    INTEGER NOT NULL DEFAULT 0,
-    remote_addr       TEXT
+    remote_addr       TEXT,
+    platform          TEXT            -- "tongbao", "windows", "linux" (from the heartbeat)
 );
+
+-- One row per liveness change (ONLINE/STALE/DOWN), written by the status
+-- tracker, so the dashboard can say "mati sejak 10:58" and show a history.
+CREATE TABLE IF NOT EXISTS status_history (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id TEXT NOT NULL,
+    status    TEXT NOT NULL,
+    since     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_status_history_device ON status_history(device_id, id);
 
 -- Every alert actually sent, used for cooldowns and as an audit trail.
 CREATE TABLE IF NOT EXISTS alert_log (
