@@ -63,6 +63,14 @@ export function fmtSinceDuration(iso) {
   return Math.floor(s / 86400) + " hari " + Math.floor((s % 86400) / 3600) + " jam";
 }
 
+export function fmtBytes(n) {
+  if (!n && n !== 0) return "—";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return (i ? n.toFixed(n < 10 ? 1 : 0) : n) + " " + units[i];
+}
+
 export function platformLabel(p) {
   return p ? PLATFORM_TEXT[p] || p : "";
 }

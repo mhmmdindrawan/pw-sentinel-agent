@@ -625,3 +625,135 @@ func TestStatusTrackerRecordsChanges(t *testing.T) {
 		}
 	}
 }
+
+func enableEnroll(e *testEnv) {
+	e.s.cfg.Site = config.Site{Code: "PCC", Name: "Plaza Central City", EnrollKey: "site-key-0123456789abcdef"}
+}
+
+func enroll(t *testing.T, e *testEnv, body map[string]any) (int, map[string]any) {
+	t.Helper()
+	rec := e.do(http.MethodPost, "/v1/enroll", "", body)
+	var out map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	return rec.Code, out
+}
+
+func TestEnrollIssuesTokenUnderSiteCode(t *testing.T) {
+	e := newTestServer(t)
+	if code, out := enroll(t, e, map[string]any{"site_key": "x", "device_id": "PCC-G01", "gate": "G01"}); code != http.StatusNotFound {
+		t.Fatalf("enroll while off: %d %v", code, out)
+	}
+	enableEnroll(e)
+
+	code, out := enroll(t, e, map[string]any{"site_key": "site-key-0123456789abcdef", "device_id": "pcc-kiosk-01",
+		"gate": "g01", "pos": "POS01", "gate_name": "Gate Keluar Timur", "platform": "Tongbao", "app_version": "3.38.0"})
+	if code != http.StatusCreated || out["location"] != "PCC" || out["gate"] != "G01" || out["site_name"] != "Plaza Central City" {
+		t.Fatalf("enroll: %d %v", code, out)
+	}
+	token, _ := out["token"].(string)
+	if len(token) != 64 {
+		t.Fatalf("token: %q", token)
+	}
+
+	// The token works like a static one, and the event lands under PCC.
+	rec := e.do(http.MethodPost, "/v1/events", token, map[string]any{"device_id": "pcc-kiosk-01", "event": "READER_NOT_READY"})
+	if rec.Code != http.StatusCreated || !strings.Contains(rec.Body.String(), `"error_code":"PCC-G01-READER-003"`) {
+		t.Fatalf("event with enrolled token: %d %s", rec.Code, rec.Body.String())
+	}
+	f := e.fleet(t)
+	d := f["pcc-kiosk-01"]
+	if !d.Enrolled || d.Name != "Gate Keluar Timur" || d.Platform != "tongbao" || d.AppVersion != "3.38.0" || d.POS != "POS01" {
+		t.Fatalf("fleet row: %+v", d)
+	}
+
+	// Re-enrolling rotates the token: the old one stops working.
+	_, out2 := enroll(t, e, map[string]any{"site_key": "site-key-0123456789abcdef", "device_id": "pcc-kiosk-01", "gate": "G01"})
+	token2, _ := out2["token"].(string)
+	if token2 == "" || token2 == token {
+		t.Fatalf("re-enroll token: %q", token2)
+	}
+	if rec := e.do(http.MethodPost, "/v1/heartbeat", token, map[string]any{"device_id": "pcc-kiosk-01"}); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("old token after re-enroll: %d", rec.Code)
+	}
+	if rec := e.do(http.MethodPost, "/v1/heartbeat", token2, map[string]any{"device_id": "pcc-kiosk-01"}); rec.Code != http.StatusOK {
+		t.Fatalf("new token: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// A static devices.yaml device cannot be taken over.
+	if code, _ := enroll(t, e, map[string]any{"site_key": "site-key-0123456789abcdef", "device_id": "TST-G01", "gate": "G09"}); code != http.StatusConflict {
+		t.Fatalf("takeover of static device: %d", code)
+	}
+
+	// Enrolled devices survive a restart (loaded from the database).
+	reg2 := devices.Empty()
+	enrolled, hashes, err := e.db.EnrolledDevices()
+	if err != nil || len(enrolled) != 1 {
+		t.Fatalf("persisted: %v %v", enrolled, err)
+	}
+	for i, en := range enrolled {
+		if err := reg2.PutEnrolled(en, hashes[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if d, ok := reg2.ByToken(token2); !ok || d.Location != "PCC" || d.Gate != "G01" {
+		t.Fatalf("after reload: %+v %v", d, ok)
+	}
+}
+
+func TestEnrollWrongKeyIsRateLimited(t *testing.T) {
+	e := newTestServer(t)
+	enableEnroll(e)
+	var code int
+	for i := 0; i < loginMaxFailures+1; i++ {
+		code, _ = enroll(t, e, map[string]any{"site_key": "wrong-key-0123456789", "device_id": "x", "gate": "G01"})
+		if i < loginMaxFailures && code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d: %d", i, code)
+		}
+	}
+	if code != http.StatusTooManyRequests {
+		t.Fatalf("after %d failures: %d", loginMaxFailures, code)
+	}
+	if code, _ := enroll(t, e, map[string]any{"site_key": "site-key-0123456789abcdef", "device_id": "bad id!", "gate": "G01"}); code != http.StatusTooManyRequests {
+		t.Fatalf("blocked ip must stay blocked even with the right key: %d", code)
+	}
+}
+
+func TestHeartbeatMovesEnrolledDeviceNotStatic(t *testing.T) {
+	e := newTestServer(t)
+	enableEnroll(e)
+	_, out := enroll(t, e, map[string]any{"site_key": "site-key-0123456789abcdef", "device_id": "pcc-kiosk-02", "gate": "G02"})
+	token := out["token"].(string)
+
+	// The app's settings changed: gate G02 -> G04, new name.
+	rec := e.do(http.MethodPost, "/v1/heartbeat", token, map[string]any{"device_id": "pcc-kiosk-02", "gate": "g04", "pos": "POS02", "gate_name": "Gate Motor"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("heartbeat: %d %s", rec.Code, rec.Body.String())
+	}
+	d := e.fleet(t)["pcc-kiosk-02"]
+	if d.Gate != "G04" || d.POS != "POS02" || d.Name != "Gate Motor" {
+		t.Fatalf("moved: %+v", d)
+	}
+	ev := e.do(http.MethodPost, "/v1/events", token, map[string]any{"device_id": "pcc-kiosk-02", "event": "APP_STARTED"})
+	if !strings.Contains(ev.Body.String(), `"error_code":"PCC-G04-APP-001"`) {
+		t.Fatalf("event after move: %s", ev.Body.String())
+	}
+	enrolled, _, _ := e.db.EnrolledDevices()
+	if enrolled[0].Gate != "G04" {
+		t.Fatalf("not persisted: %+v", enrolled)
+	}
+
+	// A static device keeps its operator-assigned gate; only the name follows.
+	e.do(http.MethodPost, "/v1/heartbeat", testToken, map[string]any{"device_id": "TST-G01", "gate": "G07", "gate_name": "Gate Uji"})
+	s := e.fleet(t)["TST-G01"]
+	if s.Gate != "G01" || s.Name != "Gate Uji" {
+		t.Fatalf("static device: %+v", s)
+	}
+	// Fleet carries site and agent info for the dashboard header.
+	var raw map[string]any
+	e.get(t, "/v1/fleet", &raw)
+	site := raw["site"].(map[string]any)
+	agent := raw["agent"].(map[string]any)
+	if site["code"] != "PCC" || site["enroll_enabled"] != true || agent["db_size_bytes"].(float64) <= 0 {
+		t.Fatalf("site/agent: %v %v", site, agent)
+	}
+}

@@ -13,7 +13,7 @@ import time
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from parkways_sentinel import SentinelClient  # noqa: E402
+from parkways_sentinel import EnrollError, SentinelClient, enroll  # noqa: E402
 
 
 class FakeAgent(object):
@@ -72,6 +72,11 @@ class FakeAgent(object):
             return 404, {"error": "not found"}
         if path == "/v1/heartbeat":
             return 200, {"status": "ok"}
+        if path == "/v1/enroll":
+            if body.get("site_key") != "site-key-0123456789abcdef":
+                return 401, {"error": "invalid site key"}
+            return 201, {"device_id": body["device_id"], "location": "PCC", "gate": body["gate"].upper(),
+                         "pos": body.get("pos", ""), "site_name": "Plaza Central City", "token": "tok-" + body["device_id"]}
         if path == "/v1/events/batch":
             if mode == "retry":
                 items = [{"index": i, "status": "error", "error": "disk", "retryable": True} for i in range(len(body["events"]))]
@@ -411,3 +416,33 @@ class ExceptionTest(Base):
         _wait(lambda: "/v1/heartbeat" in a.paths())
         hb = [r[1] for r in a.requests if r[0] == "/v1/heartbeat"][0]
         self.assertEqual(hb["platform"], "tongbao")
+
+
+class EnrollTest(Base):
+    def test_enroll_returns_token_and_identity(self):
+        a = self.agent()
+        out = enroll(a.url, "site-key-0123456789abcdef", "pcc-kiosk-01", "g01", pos="POS01",
+                     gate_name="Gate Keluar Timur", platform="tongbao", app_version="3.38.0")
+        self.assertEqual(out["token"], "tok-pcc-kiosk-01")
+        self.assertEqual(out["location"], "PCC")
+        sent = [r[1] for r in a.requests if r[0] == "/v1/enroll"][0]
+        self.assertEqual(sent["gate_name"], "Gate Keluar Timur")
+        self.assertEqual(sent["platform"], "tongbao")
+        self.assertNotIn("Authorization", [r[2] for r in a.requests if r[0] == "/v1/enroll"][0] or "")
+
+    def test_enroll_errors_carry_status(self):
+        a = self.agent()
+        with self.assertRaises(EnrollError) as cm:
+            enroll(a.url, "wrong-key", "x", "G01")
+        self.assertEqual(cm.exception.status, 401)
+        with self.assertRaises(EnrollError) as cm:
+            enroll("http://127.0.0.1:%d" % _free_port(), "k", "x", "G01", timeout=0.5)
+        self.assertIsNone(cm.exception.status)
+
+    def test_heartbeat_carries_identity_claims(self):
+        a = self.agent()
+        c = self.client(a.url, heartbeat_interval=0.1, gate="G04", gate_name="Gate Motor", pos="POS02")
+        c.beat()
+        _wait(lambda: "/v1/heartbeat" in a.paths())
+        hb = [r[1] for r in a.requests if r[0] == "/v1/heartbeat"][0]
+        self.assertEqual((hb["gate"], hb["gate_name"], hb["pos"]), ("G04", "Gate Motor", "POS02"))

@@ -172,6 +172,9 @@ func seed(dir, regPath, listen string, gates []gate, days int, now time.Time) er
   listen_addr: %q
   session_secret: "demo-session-secret"
   public_url: "http://%s"
+site:
+  code: "STI"
+  name: "Stasiun Tugu (demo)"
 retention:
   days: 3650
 `, listen, listen)); err != nil {
@@ -181,9 +184,6 @@ retention:
 	devs.WriteString("devices:\n")
 	for _, g := range gates {
 		fmt.Fprintf(&devs, "  %s:\n    location: %s\n    gate: %s\n    pos: POS01\n    token: \"demo-token-%s\"\n", g.id, g.location, g.gate, g.id)
-		if g.name != "" {
-			fmt.Fprintf(&devs, "    name: %q\n", g.name)
-		}
 	}
 	if err := write("devices.yaml", devs.String()); err != nil {
 		return err
@@ -271,7 +271,7 @@ retention:
 		if err := db.UpsertHeartbeat(model.DeviceState{
 			DeviceID: g.id, LastHeartbeatAt: now.Add(-g.lastSeenAgo).Format(time.RFC3339),
 			AppVersion: "3.1.4", SDKVersion: "0.3.0", UptimeS: 3600*9 + 120, OutboxPending: g.outbox,
-			RemoteAddr: "100.101.0.10", Platform: platformFor(g),
+			RemoteAddr: "100.101.0.10", Platform: platformFor(g), Name: g.name,
 		}); err != nil {
 			return err
 		}

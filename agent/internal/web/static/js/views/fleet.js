@@ -6,7 +6,7 @@ import { h, setText, debounce } from "../core/dom.js";
 import { api } from "../core/api.js";
 import { Poller } from "../core/poller.js";
 import { connection } from "../core/connection.js";
-import { nf, fmtClock, statusLabel, platformLabel } from "../core/format.js";
+import { nf, fmtClock, fmtBytes, statusLabel, platformLabel } from "../core/format.js";
 import { agoEl, setAgo, sinceEl, setSince } from "../core/ticker.js";
 import { statusBadge, statusIcon, sevBadge } from "../ui/badges.js";
 import { tile } from "../ui/tile.js";
@@ -23,6 +23,9 @@ export function mount(root, _params, ctx) {
   const tYellow = tile("Perhatian", { icon: statusIcon("yellow"), sub: "terlambat, error sedang, atau antrean" });
   const tGreen = tile("Normal", { icon: statusIcon("green") });
   const unmapped = h("div", { class: "notice", hidden: true });
+  // Where support is looking: site code/name and how this agent is reached.
+  const siteLine = h("div", { class: "site-line muted small", hidden: true });
+  const agentNotice = h("div", { class: "notice", hidden: true });
 
   const locSelect = h("select", { "aria-label": "Filter lokasi" }, h("option", { value: "", text: "Semua lokasi" }));
   locSelect.addEventListener("change", () => { filter.location = locSelect.value; applyFilter(); });
@@ -33,8 +36,9 @@ export function mount(root, _params, ctx) {
   const empty = h("p", { class: "empty", hidden: true });
 
   root.replaceChildren(
-    h("div", { class: "pagehead" }, h("div", {}, h("h1", { tabindex: "-1", text: "Ringkasan gate" }), updated)),
+    h("div", { class: "pagehead" }, h("div", {}, h("h1", { tabindex: "-1", text: "Ringkasan gate" }), siteLine, updated)),
     h("div", { class: "tiles" }, tTotal, tRed, tYellow, tGreen),
+    agentNotice,
     unmapped,
     h("div", { class: "controls" }, locSelect, search),
     sectionsEl, empty);
@@ -56,6 +60,7 @@ export function mount(root, _params, ctx) {
     tYellow.update(nf.format(count("yellow")));
     tGreen.update(nf.format(count("green")));
 
+    renderSite(data.site || {}, data.agent || {});
     if (data.unmapped_24h) {
       unmapped.replaceChildren(
         `${nf.format(data.unmapped_24h)} event dalam 24 jam terakhir datang dari kiosk yang device_id-nya tidak cocok dengan tokennya (UNMAPPED). `,
@@ -106,6 +111,32 @@ export function mount(root, _params, ctx) {
     applyFilter();
   }
 
+  let siteKey = "";
+  function renderSite(site, agent) {
+    const key = JSON.stringify([site, agent.version, agent.tailscale_ip, agent.listen_addr, agent.db_size_bytes > agent.db_max_bytes * 0.8, agent.disk_free_bytes]);
+    if (key === siteKey) return;
+    siteKey = key;
+    const parts = [];
+    if (site.code) parts.push(h("b", { text: site.code + (site.name ? " · " + site.name : "") }));
+    if (agent.tailscale_ip) parts.push("agent " + agent.tailscale_ip + (agent.listen_addr ? ":" + agent.listen_addr.split(":").pop() : ""));
+    else if (agent.listen_addr) parts.push("agent " + agent.listen_addr);
+    if (agent.version) parts.push("v" + agent.version);
+    if (site.code && site.enroll_enabled) parts.push("pendaftaran kiosk aktif");
+    siteLine.replaceChildren(...parts.flatMap((p, i) => (i ? [" · ", p] : [p])));
+    siteLine.hidden = !parts.length;
+    document.title = (site.code ? site.code + " — " : "") + "Parkways Sentinel";
+
+    const warn = [];
+    if (agent.db_max_bytes && agent.db_size_bytes > agent.db_max_bytes * 0.8) {
+      warn.push(`Database agent ${fmtBytes(agent.db_size_bytes)} dari batas ${fmtBytes(agent.db_max_bytes)}. Event tertua akan dibuang otomatis; periksa kiosk yang mengirim event berulang.`);
+    }
+    if (agent.disk_free_bytes && agent.disk_free_bytes < 1 << 30) {
+      warn.push(`Sisa disk server agent hanya ${fmtBytes(agent.disk_free_bytes)}.`);
+    }
+    agentNotice.replaceChildren(...warn.map((t) => h("div", { text: t })));
+    agentNotice.hidden = !warn.length;
+  }
+
   function syncOptions(locations) {
     const have = [...locSelect.options].slice(1).map((o) => o.value);
     if (have.join() === locations.join()) return;
@@ -152,7 +183,7 @@ export function mount(root, _params, ctx) {
 
 function matches(d, q) {
   if (!q) return true;
-  return [d.device_id, d.gate, d.location, d.last_error && d.last_error.event, d.last_error && d.last_error.error_code]
+  return [d.device_id, d.gate, d.location, d.name, d.remote_addr, d.last_error && d.last_error.event, d.last_error && d.last_error.error_code]
     .join(" ").toLowerCase().includes(q);
 }
 
@@ -167,6 +198,7 @@ function placeAfter(parent, el, prev) {
 function gateCard() {
   const gate = h("span", { class: "gate" });
   const badge = statusBadge("green", "");
+  const name = h("div", { class: "name", hidden: true });
   const ident = h("div", { class: "meta" });
   const since = sinceEl("", "since");
   const seen = agoEl("");
@@ -183,6 +215,7 @@ function gateCard() {
 
   const el = h("a", { class: "card" },
     h("div", { class: "row" }, gate, badge),
+    name,
     ident,
     since,
     h("div", { class: "meta" }, "Terakhir terlihat ", seen),
@@ -196,7 +229,9 @@ function gateCard() {
     el.setAttribute("aria-label", `${d.location} ${d.gate}: ${statusLabel(d)}`);
     setText(gate, d.gate);
     badge.update(d.color, statusLabel(d));
-    setText(ident, [d.device_id, platformLabel(d.platform), d.app_version ? "v" + d.app_version : ""].filter(Boolean).join(" · "));
+    setText(name, d.name || "");
+    name.hidden = !d.name;
+    setText(ident, [d.device_id, d.remote_addr, platformLabel(d.platform), d.app_version ? "v" + d.app_version : ""].filter(Boolean).join(" · "));
     // "Mati sejak 10.58 · 12 mnt" only while the gate is not simply online.
     setSince(since, d.status === "ONLINE" ? "" : d.status_since, STATUS_TEXT_SINCE[d.status]);
     since.hidden = d.status === "ONLINE" || !d.status_since;

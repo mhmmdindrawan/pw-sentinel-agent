@@ -4,6 +4,11 @@ Runbook untuk memasang satu agent pusat di VPS Linux. Semua kiosk mengirim
 ke agent ini lewat Tailscale, sedangkan NOC membuka dashboard dan menerima
 alert Telegram dari agent yang sama.
 
+> Sejak 0.5 model yang disarankan adalah **satu agent per lokasi** di
+> server lokal lokasi itu, dengan kiosk yang mendaftar sendiri:
+> [deploy-server-lokasi.md](deploy-server-lokasi.md). Runbook ini tetap
+> berlaku bila ingin satu agent pusat dengan `devices.yaml` manual.
+
 ```
 kiosk (SDK + outbox) ──Tailscale──► VPS: sentinel-agent ──► Telegram (NOC, pribadi)
                                          │
@@ -215,11 +220,13 @@ sudo crontab -u sentinel -e
 Lalu isi crontab-nya:
 
 ```
-15 2 * * * sqlite3 /opt/parkways-sentinel/data/sentinel.db ".backup /opt/parkways-sentinel/backup/sentinel-$(date +\%a).db"
+15 2 * * * rm -f /opt/parkways-sentinel/backup/sentinel-$(date +\%a).db; /opt/parkways-sentinel/sentinel-agent backup -config /opt/parkways-sentinel/config.yaml -out /opt/parkways-sentinel/backup/sentinel-$(date +\%a).db
 20 2 * * * tar -czf /opt/parkways-sentinel/backup/config-$(date +\%a).tar.gz -C /opt/parkways-sentinel config.yaml devices.yaml users.yaml registry.yaml
 ```
 
-`.backup` aman dijalankan selagi agent hidup. Hasilnya tujuh salinan
+`sentinel-agent backup` (`VACUUM INTO`) aman dijalankan selagi agent hidup
+dan tidak butuh `sqlite3` terpasang; ia menolak menimpa file yang sudah
+ada, karena itu salinan hari yang sama dihapus dulu. Hasilnya tujuh salinan
 bergilir, satu per hari dalam seminggu. `devices.yaml` berisi token semua
 kiosk, jadi salinan ke luar VPS harus disimpan di tempat yang aman. Kalau
 hilang, setiap kiosk harus didaftarkan ulang.

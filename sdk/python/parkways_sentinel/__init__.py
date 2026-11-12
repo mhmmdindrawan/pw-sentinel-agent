@@ -1,3 +1,3 @@
-from .client import SentinelClient
+from .client import EnrollError, SentinelClient, enroll
 
-__all__ = ["SentinelClient"]
+__all__ = ["SentinelClient", "enroll", "EnrollError"]

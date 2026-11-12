@@ -57,7 +57,20 @@ CREATE TABLE IF NOT EXISTS device_state (
     outbox_pending    INTEGER NOT NULL DEFAULT 0,
     outbox_dropped    INTEGER NOT NULL DEFAULT 0,
     remote_addr       TEXT,
-    platform          TEXT            -- "tongbao", "windows", "linux" (from the heartbeat)
+    platform          TEXT,           -- "tongbao", "windows", "linux" (from the heartbeat)
+    name              TEXT            -- human gate name the kiosk reports, e.g. "Gate Keluar Timur"
+);
+
+-- Kiosks that registered themselves through POST /v1/enroll (devices.yaml
+-- holds the static ones). Only the token's SHA-256 is kept.
+CREATE TABLE IF NOT EXISTS devices (
+    device_id   TEXT PRIMARY KEY,
+    location    TEXT NOT NULL,
+    gate        TEXT NOT NULL,
+    pos         TEXT,
+    token_hash  TEXT NOT NULL UNIQUE,
+    enrolled_at TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
 );
 
 -- One row per liveness change (ONLINE/STALE/DOWN), written by the status

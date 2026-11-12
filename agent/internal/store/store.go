@@ -25,7 +25,8 @@ import (
 var schema string
 
 type Store struct {
-	db *sql.DB
+	db   *sql.DB
+	path string
 }
 
 func Open(dbPath string) (*Store, error) {
@@ -55,6 +56,7 @@ func Open(dbPath string) (*Store, error) {
 	for _, m := range []struct{ table, column, typ string }{
 		{"events", "stack", "TEXT"},
 		{"device_state", "platform", "TEXT"},
+		{"device_state", "name", "TEXT"},
 	} {
 		if err := ensureColumn(db, m.table, m.column, m.typ); err != nil {
 			db.Close()
@@ -62,7 +64,7 @@ func Open(dbPath string) (*Store, error) {
 		}
 	}
 
-	return &Store{db: db}, nil
+	return &Store{db: db, path: dbPath}, nil
 }
 
 func ensureColumn(db *sql.DB, table, column, typ string) error {

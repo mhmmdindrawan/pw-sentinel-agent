@@ -38,6 +38,8 @@ type Server struct {
 	sessions *auth.Sessions
 	mux      *http.ServeMux
 	limiter  *loginLimiter
+	// enrollLimiter slows down guessing of the site enroll key.
+	enrollLimiter *loginLimiter
 	// overflowed records code groups already reported as full, so the
 	// warning is logged once rather than for every event.
 	overflowed sync.Map
@@ -52,7 +54,8 @@ func New(cfg *config.Config, reg *registry.Registry, devReg *devices.Registry, d
 	users *auth.Users, sessions *auth.Sessions) *Server {
 	s := &Server{
 		cfg: cfg, reg: reg, devReg: devReg, db: db, users: users, sessions: sessions,
-		mux: http.NewServeMux(), limiter: newLoginLimiter(), Version: "dev", now: time.Now,
+		mux: http.NewServeMux(), limiter: newLoginLimiter(), enrollLimiter: newLoginLimiter(),
+		Version: "dev", now: time.Now,
 	}
 	s.routes()
 	return s
@@ -67,6 +70,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/events", s.handlePostEvent)
 	s.mux.HandleFunc("POST /v1/events/batch", s.handlePostBatch)
 	s.mux.HandleFunc("POST /v1/heartbeat", s.handleHeartbeat)
+	// Kiosk self-registration with the site enroll key (no token yet).
+	s.mux.HandleFunc("POST /v1/enroll", s.handleEnroll)
 
 	// Dashboard / NOC: user session (or HTTP Basic for scripts), read-only.
 	s.mux.HandleFunc("POST /v1/auth/login", s.handleLogin)
@@ -373,11 +378,13 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		OutboxDropped:   hb.OutboxDropped,
 		RemoteAddr:      remoteIP(r),
 		Platform:        strings.ToLower(strings.TrimSpace(hb.Platform)),
+		Name:            trimName(hb.Name),
 	}
 	if err := s.db.UpsertHeartbeat(st); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	s.applyIdentityClaims(dev, hb, now)
 	// server_time lets the SDK notice a badly skewed kiosk clock.
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "server_time": now.Format(time.RFC3339)})
 }

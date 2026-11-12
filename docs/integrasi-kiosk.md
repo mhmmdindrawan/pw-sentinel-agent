@@ -36,21 +36,69 @@ Tetap periksa `Analysis-00.toc` untuk memastikan `outbox` dan `sqlite3` ikut ter
 
 | Kunci | Contoh | Catatan |
 |---|---|---|
-| `SENTINEL_AGENT_URL` | `http://100.64.0.1:8787` | IP Tailscale VPS (sebelumnya `127.0.0.1`) |
-| `SENTINEL_TOKEN` | dari `device add` | token baru dari agent VPS |
-| `SENTINEL_DEVICE_ID` | `STI-G03-POS01` | harus sama dengan `-id` di `device add` |
-| `SENTINEL_OUTBOX_PATH` *(baru)* | `~/.bssparking/sentinel_outbox.db` | kosong berarti outbox hanya di memori (tidak bertahan saat aplikasi restart) |
+| `SENTINEL_AGENT_URL` | `http://100.64.0.1:8787` | IP Tailscale **server lokal lokasi** (agent per lokasi, lihat [deploy-server-lokasi.md](deploy-server-lokasi.md)) |
+| `SENTINEL_SITE_KEY` *(0.5)* | kunci lokasi dari teknisi | dipakai **sekali** untuk mendaftar sendiri (`enroll`). Sama untuk semua gate di lokasi itu |
+| `SENTINEL_TOKEN` | diisi otomatis oleh `enroll()` | token milik kiosk ini. Boleh juga diisi manual dari `device add` (cara lama) |
+| `SENTINEL_DEVICE_ID` | `PCC-G01-POS01` | unik per kiosk; dipakai sebagai nama device di dashboard |
+| `SENTINEL_GATE` *(0.5)* | `G01` | kode gate pendek, **diatur dari pengaturan aplikasi** |
+| `SENTINEL_GATE_NAME` *(0.5)* | `Gate Keluar Utara` | nama yang dibaca tim support di kartu gate |
+| `SENTINEL_POS` *(0.5)* | `POS01` | opsional |
+| `SENTINEL_OUTBOX_PATH` | `~/.bssparking/sentinel_outbox.db` | kosong berarti outbox hanya di memori (tidak bertahan saat aplikasi restart) |
+
+### Daftar sendiri saat pertama jalan (`enroll`)
+
+Teknisi tidak perlu lagi menjalankan `device add` dan menyalin token satu
+per satu. Cukup isi `SENTINEL_SITE_KEY` (satu kunci per lokasi) dan biarkan
+aplikasi mendaftar sendiri saat `SENTINEL_TOKEN` masih kosong:
 
 ```python
-SentinelClient(
-    device_id=device_id,
-    base_url=agent_url,
-    token=token,
-    app_version=APP_VERSION,
-    outbox_path=os.path.expanduser(outbox_path) if outbox_path else None,
-    on_send_error=lambda exc, payload: logger.debug("sentinel: %s", exc),
-)
+from .parkways_sentinel import SentinelClient, enroll, EnrollError
+
+def get_client():
+    cfg = load_kiosk_config()
+    if not cfg.get("SENTINEL_AGENT_URL"):
+        return _NoOpClient()
+    if not cfg.get("SENTINEL_TOKEN") and cfg.get("SENTINEL_SITE_KEY"):
+        try:
+            res = enroll(cfg["SENTINEL_AGENT_URL"], cfg["SENTINEL_SITE_KEY"],
+                         device_id=cfg["SENTINEL_DEVICE_ID"], gate=cfg["SENTINEL_GATE"],
+                         pos=cfg.get("SENTINEL_POS"), gate_name=cfg.get("SENTINEL_GATE_NAME"),
+                         platform="tongbao" if IS_TONGBAO else None, app_version=APP_VERSION)
+        except EnrollError as exc:
+            logger.warning("sentinel: pendaftaran gagal (%s); coba lagi saat start berikutnya", exc)
+            return _NoOpClient()
+        cfg["SENTINEL_TOKEN"] = res["token"]
+        save_kiosk_config(cfg)          # token hanya diberikan sekali
+        logger.info("sentinel: terdaftar sebagai %s %s di %s", res["location"], res["gate"], res["site_name"])
+    return SentinelClient(
+        device_id=cfg["SENTINEL_DEVICE_ID"],
+        base_url=cfg["SENTINEL_AGENT_URL"],
+        token=cfg["SENTINEL_TOKEN"],
+        app_version=APP_VERSION,
+        platform="tongbao" if IS_TONGBAO else None,
+        gate=cfg.get("SENTINEL_GATE"),
+        gate_name=cfg.get("SENTINEL_GATE_NAME"),
+        pos=cfg.get("SENTINEL_POS"),
+        outbox_path=os.path.expanduser(cfg["SENTINEL_OUTBOX_PATH"]) if cfg.get("SENTINEL_OUTBOX_PATH") else None,
+        on_send_error=lambda exc, payload: logger.debug("sentinel: %s", exc),
+    )
 ```
+
+Aturan yang perlu dipegang:
+
+- `enroll()` memblokir paling lama `timeout` (5 detik) dan **melempar
+  `EnrollError`**; aplikasi tetap harus jalan tanpa Sentinel bila gagal
+  (agent belum dipasang, kunci salah → HTTP 401, kunci lokasi tidak
+  diaktifkan → 404). Jangan ulang dalam loop; cukup coba lagi saat start.
+- Simpan token ke config lokal dengan izin file terbatas. Kalau token
+  hilang (reinstall), panggil `enroll()` lagi: agent menerbitkan token baru
+  dan yang lama otomatis mati.
+- `gate`, `gate_name`, `pos` ikut setiap heartbeat. Mengubah nama gate dari
+  pengaturan aplikasi langsung terlihat di dashboard dalam ≤ 1 menit, tanpa
+  restart agent. Lokasi **tidak** diatur dari kiosk: selalu `site.code`
+  agent yang menerimanya.
+- Jika aplikasi menolak enroll (misal gate belum diberi nama), tampilkan
+  itu di layar pengaturan, bukan di layar transaksi.
 
 `on_send_error` sebaiknya ditulis ke log dengan level **debug**, jangan
 warning. Handler catch-all `_SentinelLoggingHandler` meneruskan WARNING ke
@@ -161,3 +209,6 @@ SentinelClient(..., platform="tongbao")   # Tongbao: MQTT + hardware, Lubuntu AR
 - [ ] Transaksi normal tidak melambat (SDK tidak pernah memblokir pemanggil).
 - [ ] Picu satu exception uji: muncul `APP_EXCEPTION` dengan stack trace di detail event, dan "Salin untuk debugging" menghasilkan Markdown yang bisa ditempel.
 - [ ] Kartu gate menampilkan platform (`Tongbao`/`Windows`) dan, saat aplikasi dihentikan, "Mati sejak HH.MM".
+- [ ] Config baru tanpa `SENTINEL_TOKEN` + `SENTINEL_SITE_KEY` terisi: aplikasi mendaftar sendiri, token tersimpan di config, kartu muncul dengan nama gate dan `terdaftar sendiri lewat kunci lokasi` di halaman gate.
+- [ ] Ubah `SENTINEL_GATE_NAME` dari pengaturan aplikasi: nama di kartu berubah dalam ≤ 1 menit.
+- [ ] Kunci lokasi salah: aplikasi tetap melayani transaksi, log berisi `pendaftaran gagal (HTTP 401 …)`.

@@ -29,8 +29,10 @@ What's in this repo:
   repeats of the same problem.
 - **`deploy/`** — systemd unit and a multi-target build script.
 - **`docs/`** — [wire protocol](docs/protocol-v1.md),
-  [VPS deployment runbook](docs/deploy-vps.md),
+  [per-site server runbook](docs/deploy-server-lokasi.md) (one agent per location, kiosks self-enroll),
+  [VPS deployment runbook](docs/deploy-vps.md) (central agent, static `devices.yaml`),
   [kiosk integration guide](docs/integrasi-kiosk.md),
+  [prompt for the gateout app repo](docs/prompt-integrasi-gateout.md),
   [field cases → detection → test matrix](docs/kasus-lapangan.md) (the backlog's source of truth),
   [AI-assisted debugging plan](docs/rencana-ai-debugging.md) (not built yet).
 - **`.github/workflows/`** — CI on every push/PR (vet, race tests, Python
@@ -51,10 +53,11 @@ stable, human-readable code:
 ```
 
 Example: `STI-G03-PAY-002` = site STI, gate 03, payment category, error #2
-(payment timeout). Location/gate come from the agent's `devices.yaml`,
-resolved from the authenticated `device_id` an event carries — the SDK
-never has to know or trust its own location label, only a stable
-`device_id` and its token (see [`docs/protocol-v1.md`](docs/protocol-v1.md)).
+(payment timeout). Location/gate come from the agent (the site's
+`site.code` for enrolled kiosks, or `devices.yaml`), resolved from the
+authenticated `device_id` an event carries — the SDK never has to know or
+trust its own location label, only a stable `device_id` and its token
+(see [`docs/protocol-v1.md`](docs/protocol-v1.md)).
 
 Categories are seeded in [`agent/registry.yaml`](agent/registry.yaml)
 (APP, PAY, READER, PRINTER, LPR, CCTV, MQTT, NET, API, DB, DEVICE, SYS).
@@ -66,15 +69,19 @@ same event always gets the same code, even across restarts.
 ## Running the agent
 
 Requires Go 1.25+ (toolchain auto-downloads via `go build` if needed).
-Production setup on a VPS is in [`docs/deploy-vps.md`](docs/deploy-vps.md).
+Production setup: one agent on each location's local server is in
+[`docs/deploy-server-lokasi.md`](docs/deploy-server-lokasi.md); a single
+central agent on a VPS in [`docs/deploy-vps.md`](docs/deploy-vps.md).
 
 ```bash
 cd agent
-cp config.example.yaml config.yaml          # set listen_addr, session_secret, public_url
+cp config.example.yaml config.yaml          # set site.code/name, listen_addr, session_secret, public_url
 go build -o sentinel-agent ./cmd/sentinel-agent
 
+# Kiosks enroll themselves with the site key (SDK `enroll()`):
+export SENTINEL_SITE_KEY="$(openssl rand -hex 16)"   # give this one key to the site's technician
+# …or register a kiosk by hand and copy its token into the kiosk config:
 ./sentinel-agent device add -id STI-G03-POS01 -location STI -gate G03 -pos POS01
-#   → prints SENTINEL_DEVICE_ID / SENTINEL_TOKEN for that kiosk's config
 ./sentinel-agent user add -name noc -role viewer   # password on stdin
 ./sentinel-agent -config config.yaml
 ```
@@ -87,8 +94,12 @@ it to the Tailscale address, never to the public internet (device tokens
 are static shared secrets and the dashboard relies on Tailscale for
 transport encryption).
 
-Other commands: `device list`, `user list`, `alert test` (sends a test
-Telegram message to every configured route), `version`.
+Other commands: `device list` (static and enrolled), `device revoke -id`,
+`user list`, `alert test` (sends a test Telegram message to every
+configured route), `backup -out FILE` (online copy of the database),
+`version`. The database is capped by `retention.days` and
+`retention.max_db_mb`; the dashboard warns when it nears the cap or the
+disk runs low.
 
 ### HTTP API
 
@@ -119,13 +130,20 @@ curl -u noc "http://100.64.0.1:8787/v1/events?location=STI&severity=HIGH&limit=2
 Full kiosk integration guide (Indonesian): [`docs/integrasi-kiosk.md`](docs/integrasi-kiosk.md).
 
 ```python
-from parkways_sentinel import SentinelClient, events
+from parkways_sentinel import SentinelClient, enroll, events
+
+# First start only: trade the site key for this kiosk's own token and keep it.
+if not config.get("SENTINEL_TOKEN"):
+    res = enroll("http://100.80.1.5:8787", config["SENTINEL_SITE_KEY"],
+                 device_id="PCC-G01-POS01", gate="G01", gate_name="Gate Keluar Utara")
+    config["SENTINEL_TOKEN"] = res["token"]; save(config)
 
 monitor = SentinelClient(
-    device_id="STI-G03-POS01",
-    base_url="http://100.64.0.1:8787",           # the agent's Tailscale address
-    token="<SENTINEL_TOKEN from `device add`>",
+    device_id="PCC-G01-POS01",
+    base_url="http://100.80.1.5:8787",           # the site server's Tailscale/LAN address
+    token=config["SENTINEL_TOKEN"],
     app_version="3.9.0",
+    gate="G01", gate_name="Gate Keluar Utara",   # shown on the dashboard; change it any time
     outbox_path="/home/kiosk/.bssparking/sentinel_outbox.db",  # survive restarts/outages
 )
 
@@ -142,8 +160,8 @@ monitor.error("BARRIER_STUCK", category="DEVICE", severity="HIGH",
               message="Boom gate barrier did not respond")
 ```
 
-`device_id` must be stable across restarts for this physical kiosk — use
-the one `sentinel-agent device add` registered. Every call returns
+`device_id` must be stable across restarts for this physical kiosk — the
+one it enrolled with (or `sentinel-agent device add` registered). Every call returns
 immediately; delivery happens on a background thread and never raises into
 the application. Report delivery problems to your own log with
 `on_send_error=lambda exc, payload: ...`.

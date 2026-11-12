@@ -78,8 +78,9 @@ export function mount(root, params, ctx) {
       return;
     }
     const d = data.device;
-    document.title = `${d.location} ${d.gate} — Parkways Sentinel`;
-    title.replaceChildren(`${d.location} · ${d.gate}`);
+    document.title = `${d.location} ${d.gate}${d.name ? " " + d.name : ""} — Parkways Sentinel`;
+    title.replaceChildren(`${d.location} · ${d.gate}`, d.name ? h("span", { class: "title-name", text: d.name }) : "");
+    setText(sub, d.device_id + (d.enrolled ? " · terdaftar sendiri lewat kunci lokasi" : " · dari devices.yaml"));
     badge.hidden = false;
     badge.update(d.color, statusLabel(d));
     tErr1.update(nf.format(d.errors_1h || 0));

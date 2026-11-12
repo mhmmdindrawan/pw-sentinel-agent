@@ -5,6 +5,17 @@
 # reached by kiosks and NOC over Tailscale). Location/gate identity per
 # event comes from devices.yaml, not from this file.
 
+# One agent per location: every kiosk this agent accepts through
+# enrollment is attributed to site.code. Support reads site.name on the
+# dashboard header. Generate the key with: openssl rand -hex 16
+# (or set SENTINEL_SITE_KEY in the environment instead of writing it here).
+# Leave enroll_key empty to disable self-registration and manage
+# devices.yaml by hand with `sentinel-agent device add`.
+site:
+  code: "PCC"
+  name: "Plaza Central City"
+  enroll_key: ""
+
 server:
   # Bind to the VPS's Tailscale IP, not 0.0.0.0, so the agent is never
   # reachable from the public internet: device tokens are static secrets
@@ -29,7 +40,8 @@ status:
   error_window_minutes: 10 # how far back errors colour a gate red/yellow
 
 retention:
-  days: 90                 # events older than this are deleted daily
+  days: 30                 # events older than this are deleted daily (site server: 30 is plenty)
+  max_db_mb: 500           # above this the oldest events go regardless of days
 
 alert:
   # Set the bot token via the SENTINEL_TELEGRAM_BOT_TOKEN environment

@@ -7,7 +7,9 @@
 //
 //	sentinel-agent [-config config.yaml]                  run the agent
 //	sentinel-agent device add -id ID -location L -gate G [-pos P]
-//	sentinel-agent device list
+//	sentinel-agent device list   [-config config.yaml]        static + enrolled
+//	sentinel-agent device revoke -id ID [-config config.yaml]  remove an enrolled kiosk
+//	sentinel-agent backup -out FILE [-config config.yaml]      copy the database while running
 //	sentinel-agent user add -name NAME -role viewer|admin  (password on stdin)
 //	sentinel-agent user list
 //	sentinel-agent alert test [-config config.yaml]        send a test message to every route
@@ -51,6 +53,8 @@ func main() {
 			os.Exit(runUser(os.Args[2:]))
 		case "alert":
 			os.Exit(runAlert(os.Args[2:]))
+		case "backup":
+			os.Exit(runBackup(os.Args[2:]))
 		case "version":
 			fmt.Println(version)
 			return
@@ -73,9 +77,13 @@ func serve() {
 		log.Fatalf("registry: %v", err)
 	}
 
+	// devices.yaml is optional once kiosks can enroll themselves.
 	devReg, err := devices.Load(cfg.Server.DevicesPath)
 	if err != nil {
-		log.Fatalf("devices: %v", err)
+		if !errors.Is(err, os.ErrNotExist) || !cfg.Site.EnrollEnabled() {
+			log.Fatalf("devices: %v", err)
+		}
+		devReg = devices.Empty()
 	}
 
 	users, err := auth.LoadUsers(cfg.Server.UsersPath)
@@ -111,6 +119,20 @@ func serve() {
 		log.Printf("loaded %d previously learned event(s) from local database", len(custom))
 	}
 
+	enrolled, hashes, err := db.EnrolledDevices()
+	if err != nil {
+		log.Fatalf("load enrolled devices: %v", err)
+	}
+	for i, e := range enrolled {
+		if err := devReg.PutEnrolled(e, hashes[i]); err != nil {
+			log.Printf("warning: enrolled device ignored: %v", err)
+		}
+	}
+	if cfg.Site.Code != "" {
+		log.Printf("site %s %q: %d enrolled device(s), enrollment %s", cfg.Site.Code, cfg.Site.Name, len(enrolled),
+			map[bool]string{true: "on", false: "off"}[cfg.Site.EnrollEnabled()])
+	}
+
 	srv := api.New(cfg, reg, devReg, db, users, sessions)
 	srv.Version = version
 	httpServer := &http.Server{
@@ -127,7 +149,7 @@ func serve() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	go runRetention(ctx, db, cfg.Retention.Days)
+	go runRetention(ctx, db, cfg.Retention.Days, int64(cfg.Retention.MaxDBMB)<<20)
 	go srv.RunStatusTracker(ctx, 30*time.Second)
 	if cfg.Monitor.PingURL != "" {
 		go runPing(ctx, db, cfg.Monitor.PingURL, time.Duration(cfg.Monitor.PingIntervalSeconds)*time.Second)
@@ -167,8 +189,10 @@ func serve() {
 	}
 }
 
-// runRetention deletes events older than `days`, at startup and then daily.
-func runRetention(ctx context.Context, db *store.Store, days int) {
+// runRetention deletes events older than `days`, at startup and then daily,
+// and trims the oldest events further whenever the database file is still
+// over maxBytes, so a noisy kiosk cannot fill the site server's disk.
+func runRetention(ctx context.Context, db *store.Store, days int, maxBytes int64) {
 	purge := func() {
 		cutoff := time.Now().AddDate(0, 0, -days)
 		n, err := db.PurgeEventsBefore(cutoff)
@@ -179,6 +203,11 @@ func runRetention(ctx context.Context, db *store.Store, days int) {
 		}
 		if _, err := db.PurgeStatusHistoryBefore(cutoff.UTC().Format(time.RFC3339)); err != nil {
 			log.Printf("retention: %v", err)
+		}
+		if n, err := db.TrimToSize(maxBytes); err != nil {
+			log.Printf("retention: size limit: %v", err)
+		} else if n > 0 {
+			log.Printf("warning: database was over retention.max_db_mb (%d MB); dropped the oldest %d event(s). A kiosk is probably sending far too many events — check the event list for repeats.", maxBytes>>20, n)
 		}
 	}
 	purge()
@@ -252,11 +281,12 @@ func redactURL(raw string) string {
 
 func runDevice(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: sentinel-agent device add|list [flags]")
+		fmt.Fprintln(os.Stderr, "usage: sentinel-agent device add|list|revoke [flags]")
 		return 2
 	}
 	fs := flag.NewFlagSet("device "+args[0], flag.ContinueOnError)
 	path := fs.String("devices", "devices.yaml", "path to devices.yaml")
+	configPath := fs.String("config", "config.yaml", "agent config (to reach enrolled devices in the database)")
 	id := fs.String("id", "", "device id, e.g. STI-G01-POS01")
 	location := fs.String("location", "", "location code, e.g. STI")
 	gate := fs.String("gate", "", "gate code, e.g. G01")
@@ -280,16 +310,105 @@ func runDevice(args []string) int {
 	case "list":
 		reg, err := devices.Load(*path)
 		if err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				fmt.Fprintln(os.Stderr, "error:", err)
+				return 1
+			}
+			reg = devices.Empty()
+		}
+		if db, ok := openStoreQuiet(*configPath); ok {
+			enrolled, hashes, err := db.EnrolledDevices()
+			db.Close()
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "error:", err)
+				return 1
+			}
+			for i, e := range enrolled {
+				_ = reg.PutEnrolled(e, hashes[i])
+			}
+		}
+		for _, e := range reg.All() {
+			src := "devices.yaml"
+			if e.Enrolled {
+				src = "enrolled"
+			}
+			fmt.Printf("%-24s %-6s %-5s %-8s %s\n", e.DeviceID, e.Location, e.Gate, e.POS, src)
+		}
+		return 0
+	case "revoke":
+		if *id == "" {
+			fmt.Fprintln(os.Stderr, "usage: sentinel-agent device revoke -id ID")
+			return 2
+		}
+		db, ok := openStoreQuiet(*configPath)
+		if !ok {
+			fmt.Fprintln(os.Stderr, "error: cannot open the agent database (is -config right?)")
+			return 1
+		}
+		defer db.Close()
+		removed, err := db.DeleteEnrolled(*id)
+		if err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			return 1
 		}
-		for _, e := range reg.All() {
-			fmt.Printf("%-24s %-6s %-5s %s\n", e.DeviceID, e.Location, e.Gate, e.POS)
+		if !removed {
+			fmt.Fprintf(os.Stderr, "no enrolled device %q (static devices are removed by editing devices.yaml)\n", *id)
+			return 1
 		}
+		fmt.Printf("revoked %s. Restart the agent so its token stops working.\n", *id)
 		return 0
 	}
-	fmt.Fprintln(os.Stderr, "usage: sentinel-agent device add|list [flags]")
+	fmt.Fprintln(os.Stderr, "usage: sentinel-agent device add|list|revoke [flags]")
 	return 2
+}
+
+// openStoreQuiet opens the database named in the config, if both exist.
+func openStoreQuiet(configPath string) (*store.Store, bool) {
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return nil, false
+	}
+	if _, err := os.Stat(cfg.Server.DBPath); err != nil {
+		return nil, false
+	}
+	db, err := store.Open(cfg.Server.DBPath)
+	if err != nil {
+		return nil, false
+	}
+	return db, true
+}
+
+// runBackup copies the live database with VACUUM INTO: consistent, and the
+// agent keeps serving while it runs.
+func runBackup(args []string) int {
+	fs := flag.NewFlagSet("backup", flag.ContinueOnError)
+	configPath := fs.String("config", "config.yaml", "path to agent config file")
+	out := fs.String("out", "", "destination file (must not exist), e.g. /backup/sentinel-2026-11-12.db")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *out == "" {
+		fmt.Fprintln(os.Stderr, "usage: sentinel-agent backup -out FILE [-config config.yaml]")
+		return 2
+	}
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	db, err := store.Open(cfg.Server.DBPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	defer db.Close()
+	if err := db.Backup(*out); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	fi, _ := os.Stat(*out)
+	fmt.Printf("backup written to %s (%d bytes)\n", *out, fi.Size())
+	return 0
 }
 
 func runUser(args []string) int {

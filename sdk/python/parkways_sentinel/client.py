@@ -82,6 +82,54 @@ def _now_iso():
     return datetime.now(timezone.utc).isoformat()
 
 
+class EnrollError(Exception):
+    """enroll() could not obtain a token. `status` is the HTTP status when
+    the agent answered (401 wrong site key, 409 device managed by hand,
+    404 enrollment off), None when it could not be reached."""
+
+    def __init__(self, message, status=None):
+        Exception.__init__(self, message)
+        self.status = status
+
+
+def enroll(base_url, site_key, device_id, gate, pos=None, gate_name=None, platform=None, app_version=None, timeout=5.0):
+    """Register this kiosk with the site's agent and return a dict with
+    `token`, `location`, `gate`, `pos`, `site_name`. Call it once, when
+    SENTINEL_TOKEN is empty, and save the token in the kiosk's local config:
+    the site key is for this call only. Calling it again with the same
+    device_id issues a new token and the old one stops working, which is
+    how a reinstalled kiosk recovers without anyone touching the agent.
+
+    Unlike SentinelClient this is a plain blocking call that raises
+    EnrollError on failure, so the app decides what to do (keep running
+    without Sentinel, retry on the next start)."""
+    body = {"site_key": site_key, "device_id": device_id, "gate": gate,
+            "platform": platform or _default_platform()}
+    if pos:
+        body["pos"] = pos
+    if gate_name:
+        body["gate_name"] = gate_name
+    if app_version:
+        body["app_version"] = app_version
+    data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(base_url.rstrip("/") + "/v1/enroll", data=data,
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            out = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = json.loads(exc.read().decode("utf-8")).get("error", "")
+        except Exception:
+            detail = ""
+        raise EnrollError("enroll failed: HTTP %d %s" % (exc.code, detail), exc.code)
+    except Exception as exc:
+        raise EnrollError("enroll failed: %s" % exc)
+    if not isinstance(out, dict) or not out.get("token"):
+        raise EnrollError("enroll failed: malformed response")
+    return out
+
+
 def _default_platform():
     p = sys.platform
     if p.startswith("win"):
@@ -121,6 +169,9 @@ class SentinelClient:
         max_backoff=60.0,
         batch_size=50,
         platform=None,
+        gate=None,
+        gate_name=None,
+        pos=None,
     ):
         """`device_id` must uniquely and stably identify this kiosk/gate
         machine and must correspond to an entry (and its token) in the
@@ -141,9 +192,16 @@ class SentinelClient:
 
         `platform` names the product variant for the dashboard ("tongbao",
         "windows", "linux"). Defaults to the OS name; a Tongbao kiosk
-        should pass "tongbao" so MQTT-related events are read in context."""
+        should pass "tongbao" so MQTT-related events are read in context.
+
+        `gate`, `gate_name`, `pos` are what the kiosk says about itself,
+        taken from the gate-out app's own settings. They ride on every
+        heartbeat: the agent keeps the name for any device and moves an
+        *enrolled* device to the new gate/pos when the settings change, so
+        support never edits the agent."""
         self._device_id = device_id
         self._platform = platform or _default_platform()
+        self._identity = {k: v for k, v in (("gate", gate), ("gate_name", gate_name), ("pos", pos)) if v}
         base = base_url.rstrip("/")
         self._url_event = base + "/v1/events"
         self._url_batch = base + "/v1/events/batch"
@@ -570,6 +628,7 @@ class SentinelClient:
             "sent_at": _now_iso(),
             "platform": self._platform,
         }
+        body.update(self._identity)
         if self._app_version:
             body["app_version"] = self._app_version
         if self._offline_since is not None:
