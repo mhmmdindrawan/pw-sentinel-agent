@@ -1,130 +1,194 @@
-# Panduan singkat: memasang Parkways Sentinel di satu lokasi
+# Panduan singkat Parkways Sentinel
 
-Satu agent per lokasi, dipasang di server lokal lokasi itu. Semua kiosk
-(gate) di lokasi itu melapor ke agent ini. Tim support membuka
-dashboard-nya lewat Tailscale. Tidak ada Telegram.
+**Cara kerjanya:** satu lokasi punya satu server. Sentinel dipasang di
+server itu. Semua gate (kiosk) di lokasi itu melapor ke Sentinel. Tim
+support melihat hasilnya di browser lewat Tailscale. Data hanya disimpan
+untuk hari berjalan: setiap jam 02.00 data kemarin dihapus otomatis.
 
-Yang Anda butuhkan: binary `sentinel-agent` (dari `deploy/build.sh` atau
-rilis GitHub), file `registry.yaml` dan `config.example.yaml` dari folder
-`agent/`, dan aplikasi gateout versi ≥ 3.38 (sudah mendukung pendaftaran
-sendiri).
+Contoh di bawah memakai PC uji: folder `~/sentinel-local`, IP Tailscale
+`100.112.209.33`. Di lokasi lain, ganti IP-nya dengan hasil
+`tailscale ip -4` di server lokasi itu.
 
-## 1. Siapkan folder agent (5 menit)
+---
+
+## A. Pasang Sentinel di server (sekali per lokasi)
+
+**1. Masuk ke folder Sentinel.** Isinya cukup tiga file:
+`sentinel-agent`, `registry.yaml`, `config.yaml`.
 
 ```bash
-mkdir -p ~/sentinel && cd ~/sentinel
-cp /path/ke/sentinel-agent .            # binary sesuai OS server
-cp /path/ke/registry.yaml .
-cp /path/ke/config.example.yaml config.yaml
+cd ~/sentinel-local
 ```
 
-Edit `config.yaml`, cukup empat baris ini:
+**2. Isi identitas lokasi.** Buka `config.yaml`, ubah hanya bagian ini:
 
 ```yaml
 site:
-  code: "PCC"                    # kode lokasi, 3–4 huruf; jadi awalan semua kode error
-  name: "Plaza Central City"     # nama yang dibaca tim support
+  code: "PCC"                 # kode lokasi, huruf besar. Muncul di depan setiap kode error.
+  name: "Plaza Central City"  # nama lokasi yang dibaca tim support
+  enroll_key: ""              # biarkan kosong (kunci diberikan lewat langkah 4)
+
 server:
-  listen_addr: "100.x.y.z:8787"  # IP Tailscale server ini (lihat: tailscale ip -4)
-  public_url: "http://100.x.y.z:8787"
+  listen_addr: "100.112.209.33:8787"
+  public_url: "http://100.112.209.33:8787"
 ```
 
-Sisanya biarkan default. Yang penting diketahui:
+Bagian lain biarkan apa adanya.
 
-- **Data dihapus otomatis tiap jam 02:00** (`retention.daily_reset_at`).
-  Agent hanya menyimpan hari operasional berjalan (maks ±24 jam). Kiosk
-  terdaftar, user, dan kode error **tidak** ikut terhapus, jadi tidak ada
-  yang perlu diulang. Kalau agent mati saat jam 02:00, penghapusan
-  dilakukan begitu agent hidup lagi. Ganti jamnya di sini atau kosongkan
-  untuk mematikan.
-- DB maksimal 500 MB, squelch 20 event sama per jam, insiden selesai
-  setelah 10 menit tenang, Telegram kosong = mati.
-
-## 2. Buat kunci lokasi dan user dashboard
+**3. Buat akun untuk membuka dashboard.** Password diketik dan tidak
+tampil di layar.
 
 ```bash
-openssl rand -hex 16 > site.key && chmod 600 site.key   # kunci lokasi, satu per lokasi
-./sentinel-agent user add -name support -role viewer    # password diketik, tidak tampil
-./sentinel-agent user add -name indra   -role admin
+./sentinel-agent user add -name indra -role admin
+./sentinel-agent user add -name support -role viewer   # tim support: hanya bisa melihat
 ```
 
-Kunci lokasi (`site.key`) adalah yang Anda berikan ke teknisi untuk diisi
-di tiap kiosk lokasi ini. Jangan tempel di chat.
+**4. Buat kunci lokasi.** Kunci ini nanti diketik di setiap gate lokasi ini
+supaya gate bisa mendaftar sendiri. Satu kunci untuk satu lokasi.
 
-## 3. Jalankan agent
+```bash
+openssl rand -hex 16 > site.key
+chmod 600 site.key
+cat site.key        # catat untuk teknisi; jangan kirim lewat grup chat
+```
 
-Coba dulu di terminal:
+**5. Coba jalankan.**
 
 ```bash
 SENTINEL_SITE_KEY="$(cat site.key)" ./sentinel-agent -config config.yaml
 ```
 
-Baris log yang harus ada: `site PCC "...": enrollment on` dan
-`listening on 100.x.y.z:8787`. Buka `http://100.x.y.z:8787`, login.
-Header harus menampilkan `PCC · Plaza Central City · agent … ·
-pendaftaran kiosk aktif`.
+Berhasil kalau muncul baris:
 
-Kalau sudah benar, jadikan service (Linux: `deploy/parkways-sentinel.service`,
-isi `Environment=SENTINEL_SITE_KEY=…` dan `WorkingDirectory=~/sentinel`;
-Windows: NSSM/`sc create` dengan variabel lingkungan yang sama).
-
-## 4. Daftarkan kiosk — dari kiosk, bukan dari agent
-
-Di tiap kiosk buka layar **Pengaturan → Parkways Sentinel** (atau edit
-`kiosk_config.json`) dan isi:
-
-| Isian | Nilai |
-|---|---|
-| Agent URL | `http://100.x.y.z:8787` |
-| Kunci lokasi | isi `site.key` |
-| Device ID | unik per kiosk: `PCC-G01-POS01`, `PCC-G02-POS01`, … |
-| Gate | `G01` |
-| Nama gate | nama yang dipakai orang: `Gate Keluar Utara` |
-| Token | **kosongkan** — terisi sendiri saat aplikasi start |
-
-Restart aplikasi kiosk. Dalam ±1 menit kartu gate muncul di dashboard
-dengan nama itu dan status Online. Mengganti nama gate di Pengaturan
-langsung mengubah dashboard; tidak ada yang perlu dilakukan di agent.
-
-Menambah gate baru = ulangi langkah ini di kiosk baru dengan Device ID
-lain. Kiosk di-reinstall = kosongkan Token, start lagi.
-
-## 5. Membaca dashboard
-
-- **Ringkasan**: kartu per gate. Merah = mati / tidak pernah lapor /
-  error berat; kuning = terlambat / error sedang / antrean; hijau = normal.
-  "Mati sejak 10.58 · 12 mnt" menyebut sejak kapan.
-- **Insiden aktif**: satu baris per gate yang sedang bermasalah: sejak
-  kapan, berapa event, isinya apa (mis. *Pembaca kartu tidak siap ×5*).
-  Selesai sendiri setelah gate online dan tenang 10 menit.
-- **Halaman gate**: status, riwayat status, insiden, error per jam,
-  ringkasan 24 jam, timeline event. Klik event → detail; **Salin untuk
-  debugging** menghasilkan teks untuk ditempel ke chat/issue/AI.
-- **Kolom Masalah** memakai nama manusia (*Palang tidak terbuka*) dengan
-  nama teknis kecil di bawahnya; **Kode** pendek `DEVICE-002`
-  (lengkapnya `PCC-G01-DEVICE-002` saat hover/detail).
-- *Log aplikasi: …* adalah baris log kiosk yang diteruskan apa adanya:
-  tidak pernah membuat gate merah; kalau mendominasi, halaman gate memberi
-  peringatan "event paling berisik" untuk developer.
-
-## 6. Perawatan
-
-```bash
-./sentinel-agent device list              # kiosk terdaftar (enrolled / devices.yaml)
-./sentinel-agent device revoke -id PCC-G02-POS01   # kiosk dibongkar; restart agent
-./sentinel-agent backup -out /backup/sentinel-$(date +%F).db   # salinan DB, aman saat agent hidup
+```
+site PCC "Plaza Central City": 0 enrolled device(s), enrollment on
+retention: monitoring data is wiped daily at 02:00 ...
+Parkways Sentinel Agent ... listening on 100.112.209.33:8787
 ```
 
-Tidak ada perawatan rutin: jam 02:00 data hari itu dihapus otomatis dan
-file DB dipadatkan (log agent: `daily reset: deleted N event(s) …`).
-Kalau butuh menyimpan bukti suatu kejadian, salin dari tombol **Salin
-untuk debugging** atau jalankan `backup` **sebelum** jam 02:00. Beban:
-±15–20 MB RAM, CPU ≈ 0.
+Buka `http://100.112.209.33:8787` lalu login. Di bawah judul tertulis
+*PCC · Plaza Central City · agent 100.112.209.33:8787 · pendaftaran kiosk
+aktif*. Hentikan dengan **Ctrl+C**.
 
-## 7. Jangan
+**6. Jalankan otomatis saat PC menyala.**
 
-- Jangan menyuntik event uji ke agent lokasi; untuk uji pakai
-  `sentinel-demo` di port lain. Data uji tidak bisa dibedakan dari laporan asli.
-- Jangan commit `config.yaml`, `devices.yaml`, `users.yaml`, `site.key`,
-  atau `*.db` ke git.
-- Jangan buka port 8787 ke internet; cukup Tailscale/LAN.
+```bash
+mkdir -p ~/.config/systemd/user
+cat > ~/.config/systemd/user/sentinel.service <<'EOF'
+[Unit]
+Description=Parkways Sentinel
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/sentinel-local
+ExecStart=/bin/sh -c 'SENTINEL_SITE_KEY="$$(cat site.key)" exec ./sentinel-agent -config config.yaml'
+Restart=always
+RestartSec=5
+Nice=10
+
+[Install]
+WantedBy=default.target
+EOF
+systemctl --user daemon-reload
+systemctl --user enable --now sentinel.service
+loginctl enable-linger "$USER"     # tetap jalan walau belum ada yang login
+```
+
+Melihat log: `journalctl --user -u sentinel -f`.
+`Nice=10` membuat Sentinel mengalah kalau aplikasi gate butuh CPU.
+
+---
+
+## B. Daftarkan gate (di setiap kiosk)
+
+Agent tidak perlu disentuh. Semua diisi dari kiosk.
+
+1. Buka aplikasi gate, lalu **Konfigurasi → Parkways Sentinel →
+   Pengaturan Sentinel**.
+2. Isi:
+
+| Kolom | Isi | Contoh |
+|---|---|---|
+| Agent URL | alamat Sentinel lokasi | `http://100.112.209.33:8787` |
+| Kunci lokasi | isi `site.key` | `3f9a…` |
+| Device ID | nama unik kiosk ini, tidak boleh sama | `PCC-G01-POS01` |
+| Gate | kode gate | `G01` |
+| Nama gate | nama yang dipakai orang | `Gate Keluar Utara` |
+| POS | boleh kosong | `POS01` |
+
+3. **Simpan**, lalu tutup dan buka lagi aplikasinya.
+4. Status di layar pengaturan menjadi *Terdaftar sebagai PCC G01 (Plaza
+   Central City)*. Dalam satu menit kartu gate muncul di dashboard.
+
+**Menambah gate:** ulangi di kiosk baru dengan Device ID dan Gate yang
+lain (`PCC-G02-POS01`, `G02`).
+**Mengganti nama gate:** ubah di Pengaturan. Dashboard ikut berubah dalam
+satu menit.
+**Kiosk diinstal ulang:** isi lagi seperti di atas. Gate mendaftar ulang
+sendiri dengan Device ID yang sama.
+
+---
+
+## C. Membaca dashboard
+
+| Yang terlihat | Artinya |
+|---|---|
+| Kartu **hijau** | Gate normal |
+| Kartu **kuning** | Laporan terlambat, ada gangguan sedang, atau event tertahan di kiosk |
+| Kartu **merah** | Gate mati, belum pernah lapor, atau ada gangguan berat (palang, reader) |
+| *Mati sejak 10.58 · 12 mnt* | Sejak kapan gate tidak memberi kabar |
+| **Insiden aktif** | Satu baris per gate bermasalah: sejak kapan, berapa kali, apa saja. Hilang sendiri setelah gate normal 10 menit |
+| Kolom **Masalah** | Penjelasan singkat (*Palang tidak terbuka*); nama teknisnya kecil di bawah |
+| Kolom **Kode** | Kode pendek untuk disebut ke developer (`DEVICE-002`) |
+| *Log aplikasi: …* | Catatan log dari aplikasi; tidak pernah membuat kartu merah |
+| *Kiosk sempat tidak terhubung ke Sentinel* | Jaringan kiosk–server sempat putus; event selama putus tetap terkirim setelahnya |
+
+Untuk melapor ke developer: buka event, klik **Salin untuk debugging**,
+lalu tempel di chat.
+
+---
+
+## D. Data dan penghapusan harian
+
+- Setiap **jam 02.00 (jam server)** event, insiden, dan riwayat hari
+  sebelumnya dihapus. Gate yang terdaftar, akun, dan kode error tetap
+  ada, jadi tidak ada yang perlu diulang.
+- **Server mati saat jam 02.00** (misalnya mati jam 00.00, hidup jam
+  07.00): data kemarin dihapus begitu server hidup jam 07.00. Event yang
+  tertahan di kiosk selama server mati tetap masuk dan tidak ikut
+  terhapus.
+- Ingin menyimpan bukti sebelum terhapus? Pakai **Salin untuk debugging**,
+  atau:
+
+  ```bash
+  ./sentinel-agent backup -out ~/bukti-$(date +%F).db
+  ```
+
+- Ingin mengganti jam hapus? Ubah `daily_reset_at` di `config.yaml`
+  (kosongkan untuk mematikan), lalu jalankan
+  `systemctl --user restart sentinel`.
+
+---
+
+## E. Kalau ada masalah
+
+| Gejala | Cek |
+|---|---|
+| Dashboard tidak bisa dibuka | `systemctl --user status sentinel`; IP di `listen_addr` sama dengan `tailscale ip -4` |
+| Pengaturan gate: *kunci lokasi salah* | Kunci yang diketik tidak sama dengan `site.key` |
+| Pengaturan gate: *pendaftaran mandiri tidak aktif* | Sentinel dijalankan tanpa `site.key` (lihat langkah A6) |
+| Pengaturan gate: *device_id sudah terdaftar statis* | Pakai Device ID lain |
+| Kartu gate tidak muncul | Aplikasi gate sudah dibuka ulang setelah disimpan? Agent URL benar? |
+| Kartu *Belum pernah lapor* | Gate terdaftar tapi aplikasinya belum berjalan |
+| Mencabut gate yang dibongkar | `./sentinel-agent device revoke -id PCC-G02-POS01`, lalu restart Sentinel |
+| Melihat daftar gate | `./sentinel-agent device list` |
+
+---
+
+## F. Aturan
+
+- Jangan mengirim event uji ke Sentinel lokasi: hasilnya tercampur dengan
+  laporan asli. Untuk uji, pakai `sentinel-demo`.
+- `site.key`, `users.yaml`, `config.yaml`, dan file `.db` tidak boleh
+  masuk git atau grup chat.
+- Port 8787 hanya untuk Tailscale/LAN, jangan dibuka ke internet.
