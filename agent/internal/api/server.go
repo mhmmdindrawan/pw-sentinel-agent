@@ -4,7 +4,9 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
@@ -40,6 +42,8 @@ type Server struct {
 	limiter  *loginLimiter
 	// enrollLimiter slows down guessing of the site enroll key.
 	enrollLimiter *loginLimiter
+	// squelch collapses a kiosk's repeated events (see squelch.go).
+	squelch *squelcher
 	// overflowed records code groups already reported as full, so the
 	// warning is logged once rather than for every event.
 	overflowed sync.Map
@@ -55,6 +59,7 @@ func New(cfg *config.Config, reg *registry.Registry, devReg *devices.Registry, d
 	s := &Server{
 		cfg: cfg, reg: reg, devReg: devReg, db: db, users: users, sessions: sessions,
 		mux: http.NewServeMux(), limiter: newLoginLimiter(), enrollLimiter: newLoginLimiter(),
+		squelch: newSquelcher(cfg.Ingest.SquelchPerHour),
 		Version: "dev", now: time.Now,
 	}
 	s.routes()
@@ -284,8 +289,16 @@ func (s *Server) ingestOne(deviceEntry devices.Entry, in model.IncomingEvent) in
 			in.Context["severity_hint"] = in.Severity
 		}
 	}
-	if severity == "MEDIUM" && strings.HasPrefix(in.Event, catchAllPrefix) {
-		severity = "LOW"
+	if strings.HasPrefix(in.Event, catchAllPrefix) {
+		// A log line is never a confirmed gate fault: warnings stay quiet
+		// (LOW) and errors can colour a gate yellow at most (MEDIUM), so a
+		// server that is simply unreachable doesn't paint every gate red.
+		switch severity {
+		case "MEDIUM":
+			severity = "LOW"
+		case "HIGH", "CRITICAL":
+			severity = "MEDIUM"
+		}
 	}
 	if r := []rune(in.Stack); len(r) > maxStack {
 		in.Stack = string(r[:maxStack]) + "\n… (dipotong)"
@@ -296,7 +309,22 @@ func (s *Server) ingestOne(deviceEntry devices.Entry, in model.IncomingEvent) in
 		appVersion = s.cfg.App.Version
 	}
 
-	receivedAt := s.now().UTC().Format(time.RFC3339)
+	now := s.now().UTC()
+	receivedAt := now.Format(time.RFC3339)
+	squelchKey := deviceEntry.DeviceID + "\x00" + in.Event
+	if location != UnmappedLocation {
+		held, sum := s.squelch.admit(squelchKey, now)
+		if sum != nil {
+			s.storeSquelchSummary(*sum)
+		}
+		if held {
+			// Acknowledge so the SDK drops it from its outbox; the hour's
+			// summary will carry the count.
+			return ingestResult{Event: model.StoredEvent{DeviceID: in.DeviceID, EventID: eventID, Event: in.Event,
+				Location: location, Gate: gate, ErrorCode: registry.ErrorCode(location, gate, entry), Severity: severity,
+				ReceivedAt: receivedAt}, Duplicate: true, Status: http.StatusOK}
+		}
+	}
 	occurredAt := receivedAt
 	if in.OccurredAt != "" {
 		if _, err := time.Parse(time.RFC3339, in.OccurredAt); err == nil {
@@ -344,11 +372,64 @@ func (s *Server) ingestOne(deviceEntry devices.Entry, in model.IncomingEvent) in
 	ev.ID = id
 
 	if location != UnmappedLocation {
+		s.squelch.stored(squelchKey, ev)
 		if err := s.db.TouchEventSeen(deviceEntry.DeviceID, receivedAt, appVersion); err != nil {
 			log.Printf("warning: %v", err)
 		}
+		s.noteIncident(ev, now)
 	}
 	return ingestResult{Event: ev, Status: http.StatusCreated}
+}
+
+// storeSquelchSummary writes the one event that stands for a window's
+// held repeats: same device, name and code, with the count in context.
+func (s *Server) storeSquelchSummary(sum squelchSummary) {
+	ev := sum.template
+	ev.ID = 0
+	ev.EventID = fmt.Sprintf("squelch-%s-%s-%d", ev.DeviceID, ev.Event, sum.from.Unix())
+	ev.OccurredAt = sum.to.Format(time.RFC3339)
+	ev.ReceivedAt = ev.OccurredAt
+	ev.Message = fmt.Sprintf("Berulang %d× lagi antara %s dan %s (hanya %d pertama per jam yang disimpan)",
+		sum.held, sum.from.Format("15:04"), sum.to.Format("15:04"), s.squelch.limit)
+	ev.Stack = ""
+	ev.Context = map[string]any{"squelched_count": sum.held, "window_start": sum.from.Format(time.RFC3339)}
+	if _, err := s.db.InsertEvent(ev); err != nil && !store.IsUniqueViolation(err) {
+		log.Printf("warning: squelch summary for %s %s: %v", ev.DeviceID, ev.Event, err)
+		return
+	}
+	log.Printf("squelch: %s sent %s %d× more in an hour; stored as one summary", ev.DeviceID, ev.Event, sum.held)
+}
+
+// RunSquelchFlusher closes idle squelch windows so a summary is written
+// even when the kiosk stops repeating itself.
+func (s *Server) RunSquelchFlusher(ctx context.Context, every time.Duration) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-t.C:
+			for _, sum := range s.squelch.drain(now.UTC()) {
+				s.storeSquelchSummary(sum)
+			}
+		}
+	}
+}
+
+// noteIncident counts a MEDIUM+ event against the gate's open incident.
+func (s *Server) noteIncident(ev model.StoredEvent, now time.Time) {
+	if s.cfg.Incident.Disabled || status.SeverityRank(ev.Severity) < status.SeverityRank("MEDIUM") {
+		return
+	}
+	in, opened, err := s.db.AttachToIncident(ev.DeviceID, ev.Location, ev.Gate, ev.Event, ev.Severity, now)
+	if err != nil {
+		log.Printf("warning: incident for %s: %v", ev.DeviceID, err)
+		return
+	}
+	if opened {
+		log.Printf("incident #%d opened: %s %s %s (%s)", in.ID, ev.Location, ev.Gate, ev.Event, ev.Severity)
+	}
 }
 
 func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {

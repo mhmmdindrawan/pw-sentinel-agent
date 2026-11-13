@@ -94,6 +94,12 @@ it to the Tailscale address, never to the public internet (device tokens
 are static shared secrets and the dashboard relies on Tailscale for
 transport encryption).
 
+A kiosk that repeats itself is contained on the agent side: catch-all
+`LOG_*` events never colour a gate red, more than `ingest.squelch_per_hour`
+identical events are collapsed into one summary, and consecutive trouble
+on a gate becomes one **incident** (`/v1/fleet` → `incidents`) with a
+single Telegram message that is edited as it grows and when it ends.
+
 Other commands: `device list` (static and enrolled), `device revoke -id`,
 `user list`, `alert test` (sends a test Telegram message to every
 configured route), `backup -out FILE` (online copy of the database),

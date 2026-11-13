@@ -80,8 +80,27 @@ type Site struct {
 // EnrollEnabled reports whether kiosks may self-register.
 func (s Site) EnrollEnabled() bool { return s.Code != "" && s.EnrollKey != "" }
 
+// Ingest guards the agent against a kiosk that reports the same thing in a
+// loop (a dead reader logged every poll cycle): after SquelchPerHour
+// events with the same name from one device within an hour, the rest of
+// that hour is stored as one summary event. 0 disables.
+type Ingest struct {
+	SquelchPerHour int `yaml:"squelch_per_hour"`
+}
+
+// Incident groups a gate's consecutive MEDIUM+ events (and a DOWN status)
+// into one incident while they keep coming; it is resolved after
+// GapMinutes of quiet with the gate online. Telegram gets one message per
+// incident, edited as it grows and when it ends, instead of one per event.
+type Incident struct {
+	Disabled   bool `yaml:"disabled"`
+	GapMinutes int  `yaml:"gap_minutes"`
+}
+
 type Config struct {
 	Identity  Identity  `yaml:"identity"`
+	Ingest    Ingest    `yaml:"ingest"`
+	Incident  Incident  `yaml:"incident"`
 	Site      Site      `yaml:"site"`
 	Server    Server    `yaml:"server"`
 	App       App       `yaml:"app"`
@@ -152,6 +171,12 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Retention.MaxDBMB <= 0 {
 		cfg.Retention.MaxDBMB = 500
+	}
+	if cfg.Ingest.SquelchPerHour < 0 {
+		cfg.Ingest.SquelchPerHour = 0
+	}
+	if cfg.Incident.GapMinutes <= 0 {
+		cfg.Incident.GapMinutes = 10
 	}
 	if cfg.Monitor.PingIntervalSeconds <= 0 {
 		cfg.Monitor.PingIntervalSeconds = 60

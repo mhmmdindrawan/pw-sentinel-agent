@@ -26,20 +26,35 @@ type fakeSender struct {
 	msgs     []sent
 	fail     bool
 	attempts int
+	edits    int
 	// chat id -> answer the next send to it with HTTP 429 and this wait
 	limit map[string]time.Duration
 }
 
-func (f *fakeSender) Send(_ context.Context, to Destination, text string) error {
+func (f *fakeSender) Send(_ context.Context, to Destination, text string) (int64, error) {
+	f.attempts++
+	if f.fail {
+		return 0, errors.New("network down")
+	}
+	if d, ok := f.limit[to.ChatID]; ok {
+		delete(f.limit, to.ChatID)
+		return 0, &RateLimitError{RetryAfter: d}
+	}
+	f.msgs = append(f.msgs, sent{to.ChatID, to.ThreadID, text})
+	return int64(len(f.msgs)), nil // message id = 1-based index into msgs
+}
+
+// Edit rewrites the message in place, like Telegram does.
+func (f *fakeSender) Edit(_ context.Context, to Destination, id int64, text string) error {
 	f.attempts++
 	if f.fail {
 		return errors.New("network down")
 	}
-	if d, ok := f.limit[to.ChatID]; ok {
-		delete(f.limit, to.ChatID)
-		return &RateLimitError{RetryAfter: d}
+	if id < 1 || int(id) > len(f.msgs) || f.msgs[id-1].chat != to.ChatID {
+		return errors.New("message to edit not found")
 	}
-	f.msgs = append(f.msgs, sent{to.ChatID, to.ThreadID, text})
+	f.edits++
+	f.msgs[id-1].text = text
 	return nil
 }
 
@@ -462,7 +477,7 @@ func TestTelegramErrors(t *testing.T) {
 	tg.BaseURL = srv.URL
 
 	status, reply = 429, `{"ok":false,"error_code":429,"description":"Too Many Requests: retry after 35","parameters":{"retry_after":35}}`
-	err := tg.Send(context.Background(), Destination{ChatID: "-100", ThreadID: 12}, "x")
+	_, err := tg.Send(context.Background(), Destination{ChatID: "-100", ThreadID: 12}, "x")
 	var rl *RateLimitError
 	if !errors.As(err, &rl) || rl.RetryAfter != 35*time.Second {
 		t.Fatalf("429: err = %v", err)
@@ -472,7 +487,7 @@ func TestTelegramErrors(t *testing.T) {
 	}
 
 	status, reply = 429, `{"ok":false}`
-	if err := tg.Send(context.Background(), Destination{ChatID: "-100"}, "x"); !errors.As(err, &rl) || rl.RetryAfter <= 0 {
+	if _, err := tg.Send(context.Background(), Destination{ChatID: "-100"}, "x"); !errors.As(err, &rl) || rl.RetryAfter <= 0 {
 		t.Fatalf("429 without retry_after: err = %v", err)
 	}
 	if gotThread != "" {
@@ -480,7 +495,7 @@ func TestTelegramErrors(t *testing.T) {
 	}
 
 	status, reply = 400, `{"ok":false,"error_code":400,"description":"Bad Request: group chat was upgraded to a supergroup chat","parameters":{"migrate_to_chat_id":-1001234567890}}`
-	if err := tg.Send(context.Background(), Destination{ChatID: "-4321"}, "x"); err == nil || !strings.Contains(err.Error(), "-1001234567890") {
+	if _, err := tg.Send(context.Background(), Destination{ChatID: "-4321"}, "x"); err == nil || !strings.Contains(err.Error(), "-1001234567890") {
 		t.Fatalf("migrate: err = %v", err)
 	}
 }
@@ -495,7 +510,7 @@ func TestTelegramSender(t *testing.T) {
 	defer srv.Close()
 	tg := NewTelegram("123:SECRET")
 	tg.BaseURL = srv.URL
-	if err := tg.Send(context.Background(), Destination{ChatID: "-100"}, "<b>halo</b>"); err != nil {
+	if _, err := tg.Send(context.Background(), Destination{ChatID: "-100"}, "<b>halo</b>"); err != nil {
 		t.Fatal(err)
 	}
 	if gotPath != "/bot123:SECRET/sendMessage" || gotChat != "-100" || gotText != "<b>halo</b>" || gotMode != "" {
@@ -503,7 +518,85 @@ func TestTelegramSender(t *testing.T) {
 	}
 
 	srv.Close() // now unreachable: the error must not leak the token
-	if err := tg.Send(context.Background(), Destination{ChatID: "-100"}, "x"); err == nil || strings.Contains(err.Error(), "SECRET") {
+	if _, err := tg.Send(context.Background(), Destination{ChatID: "-100"}, "x"); err == nil || strings.Contains(err.Error(), "SECRET") {
 		t.Fatalf("error = %v", err)
 	}
+}
+
+// With incidents on, Telegram gets one message per incident per route,
+// edited as the count grows and once more when it resolves; per-event and
+// DOWN messages are not sent on top of it.
+func TestIncidentMessagesAreEditedNotRepeated(t *testing.T) {
+	e := newEnv(t)
+	e.a.Incidents = true
+	e.tick(time.Second) // baseline: first run only records where history ends
+	e.now = e.now.Add(grace)
+	e.fleet["STI-G03-POS01"] = withName(e.fleet["STI-G03-POS01"], "Gate Timur")
+	e.event("STI-G03-POS01", "STI", "G03", "READER_NOT_READY", "STI-G03-READER-003", "HIGH")
+	in, _, err := e.db.AttachToIncident("STI-G03-POS01", "STI", "G03", "READER_NOT_READY", "HIGH", e.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.tick(time.Second)
+	noc := e.sender.to("noc-chat")
+	if len(noc) != 1 || !strings.Contains(noc[0], "INSIDEN #1") || !strings.Contains(noc[0], "Gate Timur") ||
+		!strings.Contains(noc[0], "Pembaca kartu tidak siap ×1") {
+		t.Fatalf("open message: %v", noc)
+	}
+	if n := len(e.sender.to("lbi-chat")); n != 0 {
+		t.Fatalf("LBI route got an STI incident: %d", n)
+	}
+	// More events soon after: no new message, no edit yet (edit cadence).
+	e.now = e.now.Add(time.Minute)
+	for i := 0; i < 3; i++ {
+		e.event("STI-G03-POS01", "STI", "G03", "READER_NOT_READY", "STI-G03-READER-003", "HIGH")
+		if _, _, err := e.db.AttachToIncident("STI-G03-POS01", "STI", "G03", "READER_NOT_READY", "HIGH", e.now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.tick(time.Second)
+	if len(e.sender.to("noc-chat")) != 1 || e.sender.edits != 0 {
+		t.Fatalf("early tick: msgs=%d edits=%d", len(e.sender.to("noc-chat")), e.sender.edits)
+	}
+	// After the edit interval the same message is rewritten with the count.
+	e.now = e.now.Add(5 * time.Minute)
+	e.tick(time.Second)
+	// Two routes hold the message (noc and pribadi), so two edits.
+	if noc = e.sender.to("noc-chat"); len(noc) != 1 || e.sender.edits != 2 || !strings.Contains(noc[0], "4 event") {
+		t.Fatalf("edited: msgs=%d edits=%d text=%q", len(noc), e.sender.edits, noc[0])
+	}
+	// The gate goes DOWN meanwhile: no separate MATI message.
+	e.setDevice("STI-G03-POS01", "STI", "G03", "DOWN", 0)
+	e.tick(time.Second)
+	if len(e.sender.to("noc-chat")) != 1 {
+		t.Fatalf("DOWN sent its own message: %v", e.sender.to("noc-chat"))
+	}
+	// Resolved: final edit, then nothing more.
+	e.setDevice("STI-G03-POS01", "STI", "G03", "ONLINE", 0)
+	e.now = e.now.Add(20 * time.Minute)
+	if _, err := e.db.ResolveQuietIncidents(e.now, 10*time.Minute, nil); err != nil {
+		t.Fatal(err)
+	}
+	e.tick(time.Second)
+	e.tick(time.Second)
+	noc = e.sender.to("noc-chat")
+	if len(noc) != 1 || e.sender.edits != 4 || !strings.Contains(noc[0], "SELESAI") || !strings.Contains(noc[0], "4 event") {
+		t.Fatalf("resolved: msgs=%d edits=%d text=%q", len(noc), e.sender.edits, noc[0])
+	}
+	left, _ := e.db.IncidentsToNotify(10)
+	if len(left) != 0 {
+		t.Fatalf("incident #%d still pending after final edit", in.ID)
+	}
+	// A restart keeps editing the same message, not sending a new one.
+	e.restart()
+	e.a.Incidents = true
+	e.tick(time.Second)
+	if len(e.sender.to("noc-chat")) != 1 {
+		t.Fatalf("restart re-sent: %v", e.sender.to("noc-chat"))
+	}
+}
+
+func withName(d model.FleetDevice, name string) model.FleetDevice {
+	d.Name = name
+	return d
 }

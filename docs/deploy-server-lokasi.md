@@ -149,11 +149,31 @@ menolak menimpa file yang sudah ada. Yang perlu diamankan di luar server:
 `config.yaml`, `users.yaml`, dan file DB (berisi hash token kiosk; kalau
 hilang kiosk cukup enroll ulang).
 
-## 7. Cek akhir
+## 7. Telegram: tidak dipakai
+
+Keputusan 2026-11-13: notifikasi Telegram **tidak diaktifkan** (rawan
+bocor/berisik; dashboard Sentinel sudah cukup). Biarkan
+`SENTINEL_TELEGRAM_BOT_TOKEN` kosong dan `alert.routes` kosong — agent
+mencatat `alerts off` saat start dan tidak membuka koneksi keluar sama
+sekali. Insiden tetap tercatat dan tampil di dashboard. Kalau suatu saat
+dibutuhkan, isi token lewat environment service dan satu `alert.routes`;
+pesannya per insiden (satu pesan, diedit saat bertambah/selesai).
+
+## 8. Dashboard pusat (belum ada — rencana)
+
+Tiap lokasi berdiri sendiri; tim support membuka dashboard lokasi lewat
+Tailscale (`http://<ip-tailscale-server>:8787`). Tahap berikutnya adalah
+satu halaman pusat yang **hanya membaca** `/v1/fleet` setiap agent lokasi
+lewat Tailscale dan menampilkan ringkasan semua lokasi (gate merah, insiden
+aktif) dengan tautan ke dashboard lokasinya — tanpa memindahkan data, jadi
+server lokasi tidak bertambah beban.
+
+## 9. Cek akhir
 
 - [ ] `curl http://100.80.1.5:8787/v1/health` → `{"status":"ok",…}`.
 - [ ] Header dashboard menampilkan `PCC · Plaza Central City · agent 100.80.1.5:8787 · pendaftaran kiosk aktif`.
 - [ ] Setiap kiosk tampil dengan nama gatenya, status ONLINE, platform benar.
 - [ ] Kirim kunci salah dari satu kiosk: HTTP 401 di log kiosk, setelah beberapa kali 429, agent tetap sehat.
-- [ ] Matikan satu kiosk 10 menit: kartu merah "Mati sejak", Telegram (jika diatur) satu pesan.
+- [ ] Matikan satu kiosk 10 menit: kartu merah "Mati sejak" dan satu insiden aktif.
 - [ ] `top`/Task Manager: `sentinel-agent` < 50 MB RAM, CPU ~0 saat idle.
+- [ ] Biarkan satu kiosk berisik (mis. server pembayaran dimatikan) 1 jam: log agent memuat `squelch: … stored as one summary`, DB tidak membengkak, dashboard menampilkan satu insiden.

@@ -41,7 +41,7 @@ func NewTelegram(token string) *Telegram {
 	return &Telegram{Token: token, BaseURL: "https://api.telegram.org", Client: &http.Client{Timeout: 15 * time.Second}}
 }
 
-func (t *Telegram) Send(ctx context.Context, to Destination, text string) error {
+func (t *Telegram) Send(ctx context.Context, to Destination, text string) (int64, error) {
 	form := url.Values{
 		"chat_id":                  {to.ChatID},
 		"text":                     {text},
@@ -50,22 +50,46 @@ func (t *Telegram) Send(ctx context.Context, to Destination, text string) error 
 	if to.ThreadID > 0 {
 		form.Set("message_thread_id", strconv.Itoa(to.ThreadID))
 	}
+	return t.call(ctx, "sendMessage", to, form)
+}
+
+// Edit rewrites a message this bot sent earlier. Telegram answers an
+// unchanged text with an error ("message is not modified"), which is
+// harmless, so it is reported as success.
+func (t *Telegram) Edit(ctx context.Context, to Destination, messageID int64, text string) error {
+	form := url.Values{
+		"chat_id":                  {to.ChatID},
+		"message_id":               {strconv.FormatInt(messageID, 10)},
+		"text":                     {text},
+		"disable_web_page_preview": {"true"},
+	}
+	_, err := t.call(ctx, "editMessageText", to, form)
+	if err != nil && strings.Contains(err.Error(), "message is not modified") {
+		return nil
+	}
+	return err
+}
+
+func (t *Telegram) call(ctx context.Context, method string, to Destination, form url.Values) (int64, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		t.BaseURL+"/bot"+t.Token+"/sendMessage", strings.NewReader(form.Encode()))
+		t.BaseURL+"/bot"+t.Token+"/"+method, strings.NewReader(form.Encode()))
 	if err != nil {
-		return err
+		return 0, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := t.Client.Do(req)
 	if err != nil {
 		// The URL embeds the bot token; never let it reach the logs.
-		return fmt.Errorf("telegram request failed: %s", strings.ReplaceAll(err.Error(), t.Token, "<token>"))
+		return 0, fmt.Errorf("telegram request failed: %s", strings.ReplaceAll(err.Error(), t.Token, "<token>"))
 	}
 	defer resp.Body.Close()
 	var body struct {
 		OK          bool   `json:"ok"`
 		Description string `json:"description"`
-		Parameters  struct {
+		Result      struct {
+			MessageID int64 `json:"message_id"`
+		} `json:"result"`
+		Parameters struct {
 			RetryAfter      int   `json:"retry_after"`
 			MigrateToChatID int64 `json:"migrate_to_chat_id"`
 		} `json:"parameters"`
@@ -76,15 +100,15 @@ func (t *Telegram) Send(ctx context.Context, to Destination, text string) error 
 		if wait <= 0 {
 			wait = 5 * time.Second
 		}
-		return &RateLimitError{RetryAfter: wait}
+		return 0, &RateLimitError{RetryAfter: wait}
 	}
 	if body.Parameters.MigrateToChatID != 0 {
 		// Turning on Topics (or other supergroup features) gives a group a
 		// new id; the old one stops working for good.
-		return fmt.Errorf("telegram: chat %s became a supergroup, set chat_id to %d", to.ChatID, body.Parameters.MigrateToChatID)
+		return 0, fmt.Errorf("telegram: chat %s became a supergroup, set chat_id to %d", to.ChatID, body.Parameters.MigrateToChatID)
 	}
 	if resp.StatusCode != http.StatusOK || !body.OK {
-		return fmt.Errorf("telegram: HTTP %d: %s", resp.StatusCode, body.Description)
+		return 0, fmt.Errorf("telegram: HTTP %d: %s", resp.StatusCode, body.Description)
 	}
-	return nil
+	return body.Result.MessageID, nil
 }

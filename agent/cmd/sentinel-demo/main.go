@@ -32,6 +32,7 @@ import (
 	"parkways-sentinel/agent/internal/auth"
 	"parkways-sentinel/agent/internal/model"
 	"parkways-sentinel/agent/internal/registry"
+	"parkways-sentinel/agent/internal/status"
 	"parkways-sentinel/agent/internal/store"
 )
 
@@ -297,6 +298,33 @@ retention:
 		}
 		for _, c := range changes {
 			if err := db.RecordStatus(g.id, c.status, c.at.Format(time.RFC3339)); err != nil {
+				return err
+			}
+		}
+		// One resolved incident from yesterday so the gate page shows history
+		// (seeded first: an open incident absorbs whatever is attached next).
+		if g.live && g.noisy > 0.4 {
+			y := now.Add(-26 * time.Hour)
+			if _, _, err := db.AttachToIncident(g.id, g.location, g.gate, "READER_DISCONNECTED", "HIGH", y); err != nil {
+				return err
+			}
+			if _, err := db.ResolveQuietIncidents(y.Add(40*time.Minute), 10*time.Minute, nil); err != nil {
+				return err
+			}
+		}
+		// Open incidents as ingest would have: one per gate with recent
+		// MEDIUM+ events, and the DOWN gate's own.
+		for i, name := range g.recent {
+			entry, _ := reg.Lookup(name)
+			if status.SeverityRank(entry.Severity) < status.SeverityRank("MEDIUM") {
+				continue
+			}
+			if _, _, err := db.AttachToIncident(g.id, g.location, g.gate, name, entry.Severity, now.Add(-time.Duration(len(g.recent)-i)*time.Minute)); err != nil {
+				return err
+			}
+		}
+		if g.lastSeenAgo > 10*time.Minute {
+			if _, _, err := db.AttachToIncident(g.id, g.location, g.gate, model.StatusDownEvent, "HIGH", lastSeen.Add(10*time.Minute)); err != nil {
 				return err
 			}
 		}

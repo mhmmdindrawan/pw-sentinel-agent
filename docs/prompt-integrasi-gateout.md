@@ -128,6 +128,43 @@ Langkah yang harus kamu kerjakan:
       nilai variabel lokal.
     - PCLESS_DISCONNECTED hanya terkirim sekali meski retry 10 kali.
 
+11. Perbedaan per platform (satu kode, tiga build):
+    - Linux x86 (PCLess/TCP): platform bawaan SDK "linux"; MQTT_DISABLED
+      tidak dikirim. Path config/outbox ~/.local/share/<app>/ atau
+      ~/.bssparking/, chmod 0600 untuk file yang memuat token.
+    - Windows: platform bawaan "windows". Path memakai
+      os.environ["LOCALAPPDATA"]; tidak ada chmod -- cukup folder milik
+      user. Pastikan sqlite3 outbox tidak dikunci antivirus (gunakan
+      nama file .db di folder user, bukan di Program Files).
+    - Tongbao (Lubuntu ARM, Python 3.6.9, MQTT + hardware): WAJIB
+      platform="tongbao" (deteksi dari flag/konfigurasi mode MQTT+hardware
+      yang sudah ada, bukan dari platform.machine()). Kirim
+      MQTT_DISCONNECTED/MQTT_CONNECT_FAILED (sudah ada) dan MQTT_DISABLED
+      sekali per start bila MQTT dimatikan lewat config. Semua kode harus
+      lolos di 3.6: tanpa f-string, dataclass, walrus, typing 3.7+.
+
+12. Tahap 2 -- server pembayaran tidak terjangkau = SATU event transisi.
+    Pengamatan 24 jam di kiosk nyata: log `cashless.server.request`,
+    `cashless.server.health`, dan `cashless.open_connection` menghasilkan
+    ±970 event/hari untuk satu kondisi (server 192.168.x.x tidak
+    terjangkau), sementara event terstrukturnya hanya 25. Ubah menjadi:
+    - Satu objek `Transition` untuk "server pembayaran" (bukan per
+      fungsi): `down("HTTP_SERVER_ERROR" / "NETWORK_DISCONNECTED", ...)`
+      saat permintaan pertama gagal, `up()` saat permintaan berikutnya
+      berhasil -> kirim `info("SERVER_RECOVERED", context={"down_s": n})`.
+    - Logging ERROR/WARNING di ketiga jalur itu diberi
+      `extra={"sentinel": False}` supaya handler catch-all tidak
+      meneruskannya lagi; cukup `logger.debug` untuk retry berikutnya.
+    - Health check berkala yang gagal berulang TIDAK mengirim event lagi
+      selama Transition masih `down`.
+    - Target: satu gangguan server = <= 3 event (putus, pulih, dan
+      mungkin satu PAYMENT_TIMEOUT yang nyata), bukan ratusan.
+    - Pola yang sama untuk reader (READER_*), PCLess, dan kamera LPR:
+      event saat berubah, bukan setiap siklus.
+    Agent sendiri sejak 0.6 sudah menahan banjir (event sama >20×/jam
+    diringkas, LOG_* maksimal MEDIUM), tetapi sinyal yang benar harus
+    datang dari aplikasi.
+
 Serahkan: diff yang rapi per langkah, catatan di CHANGELOG aplikasi, dan
 daftar hal yang perlu diisi teknisi di lapangan (URL agent lokasi, kunci
 lokasi, device id, gate, nama gate).

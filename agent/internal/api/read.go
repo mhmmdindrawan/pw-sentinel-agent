@@ -106,9 +106,15 @@ func (s *Server) handleFleet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	incidents, err := s.db.OpenIncidents()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	th, window := s.thresholds()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"generated_at": now.Format(time.RFC3339),
+		"incidents":    incidents,
 		"thresholds": map[string]int{
 			"online_minutes":       int(th.Online.Minutes()),
 			"stale_minutes":        int(th.Stale.Minutes()),
@@ -148,11 +154,17 @@ func (s *Server) handleDevice(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		incidents, err := s.db.IncidentsForDevice(id, 20)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"device":         d,
 			"summary_24h":    summary,
 			"hourly_24h":     hourly,
 			"status_history": history,
+			"incidents":      incidents,
 		})
 		return
 	}

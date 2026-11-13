@@ -32,9 +32,11 @@ var errRouteDown = errors.New("not sent: an earlier message to this chat failed 
 // limits; it goes out on a later tick.
 var errChatBusy = errors.New("not sent yet: holding back for Telegram's rate limit")
 
-// Sender delivers one plain-text message to one chat.
+// Sender delivers one plain-text message to one chat and can rewrite it
+// later (an incident's message is edited as it grows and when it ends).
 type Sender interface {
-	Send(ctx context.Context, to Destination, text string) error
+	Send(ctx context.Context, to Destination, text string) (messageID int64, err error)
+	Edit(ctx context.Context, to Destination, messageID int64, text string) error
 }
 
 // Store is the slice of the agent database the alerter uses.
@@ -45,6 +47,8 @@ type Store interface {
 	SetKV(key, value string) error
 	LastAlertSent(key, route string) (time.Time, bool, error)
 	LogAlert(key, route, message string, at time.Time, sendErr error) error
+	IncidentsToNotify(limit int) ([]model.Incident, error)
+	SaveIncidentAlerts(id int64, alerts map[string]model.Alert, done bool) error
 }
 
 // FleetFunc returns the current per-device view (api.Server.Fleet).
@@ -91,7 +95,11 @@ type Alerter struct {
 	// restart every kiosk looks DOWN until its next heartbeat arrives.
 	grace   time.Duration
 	started time.Time
-	pending map[string][]pendingMsg // route name -> messages not delivered yet
+	// Incidents switches Telegram to one message per incident (edited as
+	// it grows and when it resolves) instead of one per event and per
+	// status change; UNMAPPED events and backlog warnings stay as they are.
+	Incidents bool
+	pending   map[string][]pendingMsg // route name -> messages not delivered yet
 	// Keyed by chat id, not route: Telegram's limits are per chat, and
 	// several routes can post into topics of the same group.
 	holdUntil map[string]time.Time   // no sends before this (after HTTP 429)
@@ -199,7 +207,13 @@ func (a *Alerter) Tick(ctx context.Context, now time.Time) error {
 	}
 	alerts = append(alerts, ev...)
 
-	return a.deliver(ctx, alerts, now)
+	if err := a.deliver(ctx, alerts, now); err != nil {
+		return err
+	}
+	if a.Incidents {
+		return a.incidentAlerts(ctx, fleet, now)
+	}
+	return nil
 }
 
 func (a *Alerter) statusAlerts(fleet []model.FleetDevice, now time.Time) ([]alert, error) {
@@ -225,8 +239,8 @@ func (a *Alerter) statusAlerts(fleet []model.FleetDevice, now time.Time) ([]aler
 	var out []alert
 	for _, d := range fleet {
 		was, cur := prev[d.DeviceID], d.Status
-		if first || was == cur {
-			continue
+		if first || was == cur || a.Incidents {
+			continue // with incidents on, DOWN/recovery is told through the incident
 		}
 		switch {
 		case cur == string(status.Down) && (was == string(status.Online) || was == string(status.Stale)):
@@ -300,6 +314,9 @@ func (a *Alerter) eventAlerts(fleet []model.FleetDevice) ([]alert, error) {
 
 	var out []alert
 	for _, e := range evs {
+		if a.Incidents && e.Location != "UNMAPPED" {
+			continue // counted in the gate's incident instead
+		}
 		out = append(out, alert{
 			key: "event:" + e.DeviceID + ":" + e.ErrorCode, severity: e.Severity, location: e.Location, cooldown: true,
 			text: a.eventText(e),
@@ -355,22 +372,10 @@ func (a *Alerter) deliver(ctx context.Context, alerts []alert, now time.Time) er
 		a.recent[chat] = kept
 	}
 	send := func(r config.AlertRoute, msg string) error {
-		chat := r.ChatID
-		if now.Before(a.holdUntil[chat]) || sentThisTick[chat] >= maxSendsPerChatPerTick ||
-			len(a.recent[chat]) >= maxSendsPerChatPerMinute {
-			return errChatBusy
-		}
-		err := a.sender.Send(ctx, Destination{ChatID: chat, ThreadID: r.ThreadID}, msg)
-		var rl *RateLimitError
-		if errors.As(err, &rl) {
-			a.holdUntil[chat] = now.Add(rl.RetryAfter)
-		}
-		if err == nil {
-			sentThisTick[chat]++
-			a.recent[chat] = append(a.recent[chat], now)
-		}
+		_, err := a.sender.Send(ctx, Destination{ChatID: r.ChatID, ThreadID: r.ThreadID}, msg)
 		return err
 	}
+	send = a.limited(send, now, sentThisTick)
 
 	for _, r := range a.cfg.Routes {
 		var lines, keys []string
@@ -465,6 +470,29 @@ func (a *Alerter) deliver(ctx context.Context, alerts []alert, now time.Time) er
 		return a.savePending()
 	}
 	return nil
+}
+
+// limited wraps a per-route send with the per-chat pacing and 429 holds,
+// shared by this tick's alerts and incident messages. recent entries older
+// than a minute must already have been dropped.
+func (a *Alerter) limited(send func(config.AlertRoute, string) error, now time.Time, sentThisTick map[string]int) func(config.AlertRoute, string) error {
+	return func(r config.AlertRoute, msg string) error {
+		chat := r.ChatID
+		if now.Before(a.holdUntil[chat]) || sentThisTick[chat] >= maxSendsPerChatPerTick ||
+			len(a.recent[chat]) >= maxSendsPerChatPerMinute {
+			return errChatBusy
+		}
+		err := send(r, msg)
+		var rl *RateLimitError
+		if errors.As(err, &rl) {
+			a.holdUntil[chat] = now.Add(rl.RetryAfter)
+		}
+		if err == nil {
+			sentThisTick[chat]++
+			a.recent[chat] = append(a.recent[chat], now)
+		}
+		return err
+	}
 }
 
 func routeWants(r config.AlertRoute, al alert) bool {
