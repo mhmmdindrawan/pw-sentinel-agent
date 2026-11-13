@@ -42,7 +42,7 @@ status:
 # A kiosk that reports the same thing every poll cycle (dead reader, server
 # unreachable) gets its first N events per hour stored; the rest of that
 # hour becomes one summary event with the count. Keeps the database,
-# the dashboard and Telegram readable. 0 disables.
+# the dashboard readable. Unset = 20; -1 disables.
 ingest:
   squelch_per_hour: 20
 

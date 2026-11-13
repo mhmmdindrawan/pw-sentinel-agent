@@ -83,7 +83,8 @@ func (s Site) EnrollEnabled() bool { return s.Code != "" && s.EnrollKey != "" }
 // Ingest guards the agent against a kiosk that reports the same thing in a
 // loop (a dead reader logged every poll cycle): after SquelchPerHour
 // events with the same name from one device within an hour, the rest of
-// that hour is stored as one summary event. 0 disables.
+// that hour is stored as one summary event. 0 means the default (20); -1
+// disables.
 type Ingest struct {
 	SquelchPerHour int `yaml:"squelch_per_hour"`
 }
@@ -171,6 +172,10 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Retention.MaxDBMB <= 0 {
 		cfg.Retention.MaxDBMB = 500
+	}
+	// Unset (0) takes the default; -1 disables squelching.
+	if cfg.Ingest.SquelchPerHour == 0 {
+		cfg.Ingest.SquelchPerHour = 20
 	}
 	if cfg.Ingest.SquelchPerHour < 0 {
 		cfg.Ingest.SquelchPerHour = 0
