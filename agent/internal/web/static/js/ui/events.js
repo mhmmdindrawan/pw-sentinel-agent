@@ -221,18 +221,41 @@ function copyButton(e) {
     ev.stopPropagation();
     const text = debugMarkdown(e);
     let ok = false;
-    try { await navigator.clipboard.writeText(text); ok = true; } catch (_) { /* no clipboard permission */ }
+    // navigator.clipboard only exists on HTTPS/localhost; the dashboard is
+    // usually opened over plain HTTP on a Tailscale IP, so fall back to the
+    // selection-based copy, which still works there.
+    if (navigator.clipboard && window.isSecureContext) {
+      try { await navigator.clipboard.writeText(text); ok = true; } catch (_) { /* denied */ }
+    }
+    if (!ok) ok = copyBySelection(text);
     if (!ok) {
-      // Fallback: offer the text in a selectable box next to the button.
-      const ta = h("textarea", { class: "copy-fallback", readonly: true, "aria-label": "Teks untuk disalin" });
+      // Last resort: one selectable box next to the button (reused on re-click).
+      let ta = btn.nextElementSibling;
+      if (!ta || !ta.classList.contains("copy-fallback")) {
+        ta = h("textarea", { class: "copy-fallback", readonly: true, "aria-label": "Teks untuk disalin" });
+        btn.after(ta);
+      }
       ta.value = text;
-      btn.after(ta);
+      ta.focus();
       ta.select();
     }
     setText(btn, ok ? "Tersalin ✓" : "Salin manual dari kotak");
     setTimeout(() => setText(btn, "Salin untuk debugging"), 2500);
   });
   return btn;
+}
+
+function copyBySelection(text) {
+  const ta = h("textarea", { readonly: true, "aria-hidden": "true" });
+  ta.value = text;
+  ta.style.cssText = "position:fixed;top:0;left:0;width:1px;height:1px;opacity:0";
+  document.body.append(ta);
+  ta.focus();
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch (_) { ok = false; }
+  ta.remove();
+  return ok;
 }
 
 // debugMarkdown has everything a developer needs to start on a bug: which
