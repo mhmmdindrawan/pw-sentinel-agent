@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // Usage reports the database file size (main file + WAL) and the free
@@ -66,4 +67,27 @@ func (s *Store) Backup(dst string) error {
 		return fmt.Errorf("backup: %w", err)
 	}
 	return nil
+}
+
+// ResetBefore is the daily wipe: everything the dashboard shows about the
+// day (events, incidents, status history, alert log) from before cutoff is
+// deleted and the file compacted; each gate keeps its current status row. Kiosk registrations, current device
+// state, users and learned error codes are kept, so kiosks keep reporting
+// without re-enrolling.
+func (s *Store) ResetBefore(cutoff time.Time) (events int64, err error) {
+	events, err = s.PurgeEventsBefore(cutoff)
+	if err != nil {
+		return events, err
+	}
+	c := cutoff.UTC().Format(time.RFC3339)
+	if _, err := s.PurgeStatusHistoryBefore(c); err != nil {
+		return events, err
+	}
+	if _, err := s.db.Exec(`DELETE FROM incidents WHERE last_at < ?`, c); err != nil {
+		return events, fmt.Errorf("reset incidents: %w", err)
+	}
+	if _, err := s.db.Exec(`VACUUM`); err != nil {
+		return events, fmt.Errorf("vacuum: %w", err)
+	}
+	return events, nil
 }

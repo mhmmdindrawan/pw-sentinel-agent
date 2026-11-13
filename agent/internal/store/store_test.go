@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"parkways-sentinel/agent/internal/devices"
 	"parkways-sentinel/agent/internal/model"
 )
 
@@ -194,5 +195,59 @@ func TestTrimToSizeDropsOldestAndBackupCopies(t *testing.T) {
 	}
 	if err := s.Backup(dst); err == nil {
 		t.Fatal("backup must refuse to overwrite")
+	}
+}
+
+// The daily reset clears the day's monitoring data but never what keeps
+// kiosks working: their enrollment and current state.
+func TestResetBeforeKeepsRegistrations(t *testing.T) {
+	s := openTemp(t)
+	cutoff := time.Date(2026, 11, 13, 19, 0, 0, 0, time.UTC) // 02:00 WIB
+	before, after := cutoff.Add(-time.Hour), cutoff.Add(time.Minute)
+	for i, at := range []time.Time{before, before, after} {
+		if _, err := s.InsertEvent(model.StoredEvent{DeviceID: "PCC-G01", EventID: fmt.Sprintf("r-%d", i), Location: "PCC", Gate: "G01",
+			Category: "APP", ErrorCode: "PCC-G01-APP-001", Event: "X", Severity: "HIGH", ReceivedAt: at.Format(time.RFC3339)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := s.AttachToIncident("PCC-G01", "PCC", "G01", "X", "HIGH", before); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordStatus("PCC-G01", "DOWN", before.Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveEnrolled(devices.Entry{DeviceID: "PCC-G01", Location: "PCC", Gate: "G01"}, "hash", before.Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpsertHeartbeat(model.DeviceState{DeviceID: "PCC-G01", LastHeartbeatAt: before.Format(time.RFC3339), Name: "Gate Utara"}); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := s.ResetBefore(cutoff)
+	if err != nil || n != 2 {
+		t.Fatalf("deleted %d, err %v; want 2", n, err)
+	}
+	left, _ := s.QueryEvents(model.EventFilter{Limit: 10})
+	if len(left) != 1 { // checked before the second reset below
+		t.Fatalf("%d events left, want the one after cutoff", len(left))
+	}
+	if inc, _ := s.IncidentsForDevice("PCC-G01", 10); len(inc) != 0 {
+		t.Fatalf("incidents kept: %+v", inc)
+	}
+	// Only the gate's current status survives, so "Mati sejak" stays right.
+	if err := s.RecordStatus("PCC-G01", "ONLINE", after.Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ResetBefore(cutoff.Add(2 * time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if h, _ := s.StatusHistory("PCC-G01", 10); len(h) != 1 || h[0].Status != "ONLINE" {
+		t.Fatalf("status history after reset: %+v", h)
+	}
+	if enr, _, _ := s.EnrolledDevices(); len(enr) != 1 {
+		t.Fatal("enrollment was wiped: kiosk would have to re-enroll")
+	}
+	if st, _ := s.DeviceStates(); st["PCC-G01"].Name != "Gate Utara" {
+		t.Fatal("device state was wiped")
 	}
 }

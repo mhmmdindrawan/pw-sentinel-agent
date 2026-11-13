@@ -51,7 +51,15 @@ mengganti "satu pesan Telegram per event" dengan "satu pesan per insiden".
 - `docs/deploy-server-lokasi.md`: rute Telegram per lokasi, catatan
   dashboard pusat.
 
+### Penghapusan harian
+- `retention.daily_reset_at: "02:00"` (jam server; `retention.timezone` opsional): tiap hari
+  pada jam itu event, insiden, dan riwayat status sebelum jam itu dihapus
+  lalu DB dipadatkan (VACUUM). Kiosk terdaftar, state device, user, dan kode
+  error tetap. Agent yang mati saat jam reset mengejar saat start. Kosong =
+  mati (berlaku `days`).
+
 ### Keputusan
+- Data hanya untuk hari operasional berjalan (reset 02:00).
 - Telegram **tidak dipakai** di rollout (rawan; dashboard Sentinel sudah
   cukup). Alerter tetap ada tetapi nonaktif selama token/rute kosong.
 

@@ -29,8 +29,16 @@ server:
   public_url: "http://100.x.y.z:8787"
 ```
 
-Sisanya biarkan default (retensi 30 hari, DB maksimal 500 MB, squelch 20,
-insiden 10 menit, Telegram kosong = mati).
+Sisanya biarkan default. Yang penting diketahui:
+
+- **Data dihapus otomatis tiap jam 02:00** (`retention.daily_reset_at`).
+  Agent hanya menyimpan hari operasional berjalan (maks ±24 jam). Kiosk
+  terdaftar, user, dan kode error **tidak** ikut terhapus, jadi tidak ada
+  yang perlu diulang. Kalau agent mati saat jam 02:00, penghapusan
+  dilakukan begitu agent hidup lagi. Ganti jamnya di sini atau kosongkan
+  untuk mematikan.
+- DB maksimal 500 MB, squelch 20 event sama per jam, insiden selesai
+  setelah 10 menit tenang, Telegram kosong = mati.
 
 ## 2. Buat kunci lokasi dan user dashboard
 
@@ -107,8 +115,11 @@ lain. Kiosk di-reinstall = kosongkan Token, start lagi.
 ./sentinel-agent backup -out /backup/sentinel-$(date +%F).db   # salinan DB, aman saat agent hidup
 ```
 
-Agent menjaga ukurannya sendiri (30 hari / 500 MB) dan memberi peringatan
-di dashboard bila disk menipis. Beban: ±15–20 MB RAM, CPU ≈ 0.
+Tidak ada perawatan rutin: jam 02:00 data hari itu dihapus otomatis dan
+file DB dipadatkan (log agent: `daily reset: deleted N event(s) …`).
+Kalau butuh menyimpan bukti suatu kejadian, salin dari tombol **Salin
+untuk debugging** atau jalankan `backup` **sebelum** jam 02:00. Beban:
+±15–20 MB RAM, CPU ≈ 0.
 
 ## 7. Jangan
 

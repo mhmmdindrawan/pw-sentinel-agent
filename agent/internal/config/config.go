@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -51,6 +52,27 @@ type Retention struct {
 	// larger, the oldest events are dropped regardless of Days, so a
 	// noisy kiosk can never fill the site server's disk. 0 = 500.
 	MaxDBMB int `yaml:"max_db_mb"`
+	// DailyResetAt ("02:00") wipes the day's monitoring data at that local
+	// time every day: events, incidents and status history from before
+	// that moment go, then the file is compacted. Registered kiosks,
+	// users and learned error codes stay. For sites that only need the
+	// current operating day. Empty = off (only Days applies).
+	DailyResetAt string `yaml:"daily_reset_at"`
+	// Timezone for DailyResetAt, e.g. "Asia/Makassar"; empty = the
+	// server's own clock, which is what the site's operators read.
+	Timezone string `yaml:"timezone"`
+}
+
+// ResetClock parses DailyResetAt into hour and minute.
+func (r Retention) ResetClock() (hour, minute int, ok bool) {
+	if r.DailyResetAt == "" {
+		return 0, 0, false
+	}
+	t, err := time.Parse("15:04", r.DailyResetAt)
+	if err != nil {
+		return 0, 0, false
+	}
+	return t.Hour(), t.Minute(), true
 }
 
 type App struct {
@@ -174,6 +196,15 @@ func Load(path string) (*Config, error) {
 		cfg.Retention.MaxDBMB = 500
 	}
 	// Unset (0) takes the default; -1 disables squelching.
+	cfg.Retention.DailyResetAt = strings.TrimSpace(cfg.Retention.DailyResetAt)
+	if cfg.Retention.DailyResetAt != "" {
+		if _, _, ok := cfg.Retention.ResetClock(); !ok {
+			return nil, fmt.Errorf("config %s: retention.daily_reset_at %q must look like \"02:00\"", path, cfg.Retention.DailyResetAt)
+		}
+		if _, err := time.LoadLocation(cfg.Retention.Timezone); err != nil {
+			return nil, fmt.Errorf("config %s: retention.timezone %q: %w", path, cfg.Retention.Timezone, err)
+		}
+	}
 	if cfg.Ingest.SquelchPerHour == 0 {
 		cfg.Ingest.SquelchPerHour = 20
 	}

@@ -150,6 +150,15 @@ func serve() {
 	defer stop()
 
 	go runRetention(ctx, db, cfg.Retention.Days, int64(cfg.Retention.MaxDBMB)<<20)
+	if h, m, ok := cfg.Retention.ResetClock(); ok {
+		loc := time.Local
+		if cfg.Retention.Timezone != "" {
+			loc, _ = time.LoadLocation(cfg.Retention.Timezone)
+		}
+		zone, _ := time.Now().In(loc).Zone()
+		go runDailyReset(ctx, db, h, m, loc)
+		log.Printf("retention: monitoring data is wiped daily at %02d:%02d %s (kiosk registrations and users are kept)", h, m, zone)
+	}
 	go srv.RunStatusTracker(ctx, 30*time.Second)
 	go srv.RunSquelchFlusher(ctx, time.Minute)
 	if cfg.Monitor.PingURL != "" {
@@ -225,6 +234,47 @@ func runRetention(ctx context.Context, db *store.Store, days int, maxBytes int64
 			return
 		case <-t.C:
 			purge()
+		}
+	}
+}
+
+// lastResetKey records the cutoff of the last daily wipe, so an agent that
+// was off at reset time catches up when it starts, and never wipes twice.
+const lastResetKey = "retention:last_reset"
+
+// runDailyReset wipes the previous operating day's monitoring data at
+// hour:minute local time every day (see store.ResetBefore).
+func runDailyReset(ctx context.Context, db *store.Store, hour, minute int, loc *time.Location) {
+	reset := func(cutoff time.Time) {
+		n, err := db.ResetBefore(cutoff)
+		if err != nil {
+			log.Printf("daily reset: %v", err)
+			return
+		}
+		if err := db.SetKV(lastResetKey, cutoff.UTC().Format(time.RFC3339)); err != nil {
+			log.Printf("daily reset: %v", err)
+		}
+		log.Printf("daily reset: deleted %d event(s) and the incidents/status history from before %s", n, cutoff.In(loc).Format("2006-01-02 15:04 MST"))
+	}
+	for {
+		now := time.Now().In(loc)
+		last := time.Date(now.Year(), now.Month(), now.Day(), hour, minute, 0, 0, loc)
+		if last.After(now) {
+			last = last.AddDate(0, 0, -1)
+		}
+		// Missed (agent was off at reset time) or first run: catch up now.
+		done, _ := db.GetKV(lastResetKey)
+		if prev, err := time.Parse(time.RFC3339, done); err != nil || prev.Before(last) {
+			reset(last)
+		}
+		next := last.AddDate(0, 0, 1)
+		timer := time.NewTimer(time.Until(next))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+			reset(next)
 		}
 	}
 }
