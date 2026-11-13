@@ -55,8 +55,16 @@ incident:
   gap_minutes: 10
 
 retention:
-  days: 30                 # events older than this are deleted daily (site server: 30 is plenty)
-  max_db_mb: 500           # above this the oldest events go regardless of days
+  # Wipe the day's monitoring data every day at this local time: events,
+  # incidents and status history from before it are deleted and the file
+  # compacted. Registered kiosks, users and error codes are kept, so
+  # nothing has to be re-done. The agent then only ever holds the current
+  # operating day (max ~24 h). If the agent was off at that time it
+  # catches up on start. Empty = off (then only `days` applies).
+  daily_reset_at: "02:00"
+  timezone: ""             # empty = server clock; or "Asia/Jakarta" / "Asia/Makassar" / "Asia/Jayapura"
+  days: 30                 # safety net when daily_reset_at is empty
+  max_db_mb: 500           # above this the oldest events go regardless
 
 # Telegram is OFF and not used in the rollout (2026-11-13): the dashboard
 # is the only channel. Leave the token and routes empty; the agent then
