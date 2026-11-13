@@ -28,7 +28,7 @@ What's in this repo:
   confirms them, backs off while the agent is unreachable, and coalesces
   repeats of the same problem.
 - **`deploy/`** — systemd unit and a multi-target build script.
-- **`docs/`** — [wire protocol](docs/protocol-v1.md),
+- **`docs/`** — [panduan singkat (ID)](docs/panduan-singkat.md), [wire protocol](docs/protocol-v1.md),
   [per-site server runbook](docs/deploy-server-lokasi.md) (one agent per location, kiosks self-enroll),
   [VPS deployment runbook](docs/deploy-vps.md) (central agent, static `devices.yaml`),
   [kiosk integration guide](docs/integrasi-kiosk.md),
