@@ -6,7 +6,7 @@ import { h, setText, debounce } from "../core/dom.js";
 import { api } from "../core/api.js";
 import { Poller } from "../core/poller.js";
 import { connection } from "../core/connection.js";
-import { nf, fmtClock, fmtBytes, fmtVersion, statusLabel, platformLabel } from "../core/format.js";
+import { nf, fmtClock, fmtBytes, fmtVersion, statusLabel, platformLabel, eventLabel, shortCode } from "../core/format.js";
 import { agoEl, setAgo, sinceEl, setSince } from "../core/ticker.js";
 import { statusBadge, statusIcon, sevBadge } from "../ui/badges.js";
 import { tile } from "../ui/tile.js";
@@ -244,8 +244,9 @@ function gateCard() {
     last.hidden = !le;
     if (le) {
       lastSev.update(le.severity);
-      setText(lastEvent, le.event);
-      setText(lastCode, le.error_code);
+      setText(lastEvent, eventLabel(le.event));
+      setText(lastCode, shortCode(le.error_code));
+      lastCode.title = le.error_code;
       setAgo(lastAgo, le.received_at);
     }
     hint.hidden = d.status !== "NEVER";
