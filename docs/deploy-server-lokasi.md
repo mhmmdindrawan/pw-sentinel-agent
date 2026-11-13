@@ -168,7 +168,24 @@ lewat Tailscale dan menampilkan ringkasan semua lokasi (gate merah, insiden
 aktif) dengan tautan ke dashboard lokasinya — tanpa memindahkan data, jadi
 server lokasi tidak bertambah beban.
 
-## 9. Cek akhir
+## 9. Uji tanpa mengotori laporan
+
+Dashboard adalah alat laporan: data uji tidak boleh tercampur dengan
+laporan kiosk nyata (sebuah "CCTV terputus" buatan terlihat sama dengan
+yang asli).
+
+- Uji sintetis (menyuntik event lewat curl/SDK) **hanya ke agent demo**:
+  `sentinel-demo` di port lain, bukan agent yang memantau kiosk nyata.
+- Kalau terpaksa menguji di agent lokasi, daftarkan device sementara
+  dengan nama jelas (`UJI-G99-POS01`, nama gate "UJI …"), dan sesudahnya
+  `device revoke -id UJI-…` lalu hapus eventnya; jangan memakai token
+  kiosk nyata untuk mengirim event buatan.
+- Menambah gate baru = kiosk nyata dengan `SENTINEL_DEVICE_ID` unik
+  (`<LOKASI>-G<nn>-POS01`), `SENTINEL_GATE` dan `SENTINEL_GATE_NAME`
+  diisi dari layar Pengaturan, `SENTINEL_SITE_KEY` lokasi; tidak perlu
+  menyentuh agent.
+
+## 10. Cek akhir
 
 - [ ] `curl http://100.80.1.5:8787/v1/health` → `{"status":"ok",…}`.
 - [ ] Header dashboard menampilkan `PCC · Plaza Central City · agent 100.80.1.5:8787 · pendaftaran kiosk aktif`.
