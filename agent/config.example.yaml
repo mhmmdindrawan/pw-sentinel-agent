@@ -39,10 +39,28 @@ status:
   stale_minutes: 10        # within this → STALE, otherwise DOWN
   error_window_minutes: 10 # how far back errors colour a gate red/yellow
 
+# A kiosk that reports the same thing every poll cycle (dead reader, server
+# unreachable) gets its first N events per hour stored; the rest of that
+# hour becomes one summary event with the count. Keeps the database,
+# the dashboard and Telegram readable. 0 disables.
+ingest:
+  squelch_per_hour: 20
+
+# Consecutive MEDIUM+ events on one gate (and the gate going DOWN) are
+# grouped into one incident until the gate has been quiet and online for
+# gap_minutes. Telegram then carries one message per incident, edited as
+# it grows and when it ends, instead of one message per event.
+incident:
+  disabled: false
+  gap_minutes: 10
+
 retention:
   days: 30                 # events older than this are deleted daily (site server: 30 is plenty)
   max_db_mb: 500           # above this the oldest events go regardless of days
 
+# Telegram is OFF and not used in the rollout (2026-11-13): the dashboard
+# is the only channel. Leave the token and routes empty; the agent then
+# makes no outbound requests at all. Kept for the future.
 alert:
   # Set the bot token via the SENTINEL_TELEGRAM_BOT_TOKEN environment
   # variable rather than here. Alerts are off until a token and a route exist.

@@ -505,8 +505,13 @@ func TestSeverityAliasesAndUnknownValues(t *testing.T) {
 		}
 	}
 
-	// A new event learned with a logging level as its default severity.
+	// A new event learned with a logging level as its default severity;
+	// a catch-all log error is capped at MEDIUM.
 	ev := postEvent(t, e, map[string]any{"device_id": "TST-G01", "event_id": "sev-new", "event": "LOG_APP__DEBIT", "severity": "error"})
+	if ev.Severity != "MEDIUM" {
+		t.Errorf("learned catch-all severity = %q, want MEDIUM", ev.Severity)
+	}
+	ev = postEvent(t, e, map[string]any{"device_id": "TST-G01", "event_id": "sev-new2", "event": "DEBIT_LOOP", "severity": "error"})
 	if ev.Severity != "HIGH" {
 		t.Errorf("learned event severity = %q, want HIGH", ev.Severity)
 	}
@@ -525,15 +530,18 @@ func TestLongEventNameIsTruncated(t *testing.T) {
 	}
 }
 
-func TestCatchAllWarningsAreLowButErrorsStayHigh(t *testing.T) {
+func TestCatchAllWarningsAreLowAndErrorsAtMostMedium(t *testing.T) {
 	e := newTestServer(t)
 	w := postEvent(t, e, map[string]any{"device_id": "TST-G01", "event": "LOG_CASHLESS__OPEN_CONNECTION", "severity": "WARNING"})
 	if w.Severity != "LOW" {
 		t.Fatalf("catch-all warning: %s", w.Severity)
 	}
 	er := postEvent(t, e, map[string]any{"device_id": "TST-G01", "event": "LOG_CASHLESS__API_OPEN_GATE", "severity": "ERROR"})
-	if er.Severity != "HIGH" {
+	if er.Severity != "MEDIUM" {
 		t.Fatalf("catch-all error: %s", er.Severity)
+	}
+	if cr := postEvent(t, e, map[string]any{"device_id": "TST-G01", "event": "LOG_CASHLESS__CRASH", "severity": "CRITICAL"}); cr.Severity != "MEDIUM" {
+		t.Fatalf("catch-all critical: %s", cr.Severity)
 	}
 	// A registry event is not touched by the rule.
 	if ev := postEvent(t, e, map[string]any{"device_id": "TST-G01", "event": "CARD_READ_TIMEOUT"}); ev.Severity != "MEDIUM" {
@@ -755,5 +763,100 @@ func TestHeartbeatMovesEnrolledDeviceNotStatic(t *testing.T) {
 	agent := raw["agent"].(map[string]any)
 	if site["code"] != "PCC" || site["enroll_enabled"] != true || agent["db_size_bytes"].(float64) <= 0 {
 		t.Fatalf("site/agent: %v %v", site, agent)
+	}
+}
+
+// A kiosk repeating the same event in a loop gets its first N stored and
+// the rest of the hour as one summary; other events are unaffected.
+func TestSquelchCollapsesRepeats(t *testing.T) {
+	e := newTestServer(t)
+	e.s.squelch = newSquelcher(5)
+	for i := 0; i < 12; i++ {
+		rec := e.do(http.MethodPost, "/v1/events", testToken, map[string]any{"device_id": "TST-G01", "event_id": fmt.Sprintf("rep-%d", i), "event": "READER_NOT_READY"})
+		want := http.StatusCreated
+		if i >= 5 {
+			want = http.StatusOK // acknowledged, not stored
+		}
+		if rec.Code != want {
+			t.Fatalf("event %d: HTTP %d, want %d", i, rec.Code, want)
+		}
+	}
+	postEvent(t, e, map[string]any{"device_id": "TST-G01", "event": "PAYMENT_TIMEOUT"})
+	var list []model.StoredEvent
+	e.get(t, "/v1/events?device_id=TST-G01&event=READER_NOT_READY", &list)
+	if len(list) != 5 {
+		t.Fatalf("stored %d repeats, want 5", len(list))
+	}
+	// Window ends: the summary carries the held count.
+	e.now = e.now.Add(61 * time.Minute)
+	for _, sum := range e.s.squelch.drain(e.now) {
+		e.s.storeSquelchSummary(sum)
+	}
+	e.get(t, "/v1/events?device_id=TST-G01&event=READER_NOT_READY", &list)
+	if len(list) != 6 {
+		t.Fatalf("after window: %d events, want 6 (5 + summary)", len(list))
+	}
+	if got := list[0].Context["squelched_count"]; got != float64(7) {
+		t.Fatalf("summary squelched_count = %v, want 7", got)
+	}
+	if !strings.Contains(list[0].Message, "Berulang 7×") {
+		t.Fatalf("summary message: %q", list[0].Message)
+	}
+	// A new window starts fresh.
+	if rec := e.do(http.MethodPost, "/v1/events", testToken, map[string]any{"device_id": "TST-G01", "event_id": "rep-new", "event": "READER_NOT_READY"}); rec.Code != http.StatusCreated {
+		t.Fatalf("new window: HTTP %d", rec.Code)
+	}
+}
+
+// MEDIUM+ events on one gate within the gap share an incident; a DOWN gate
+// joins it; quiet for the gap resolves it; LOW never opens one.
+func TestIncidentsGroupTrouble(t *testing.T) {
+	e := newTestServer(t)
+	e.s.cfg.Incident.GapMinutes = 10
+	started := e.now
+	postEvent(t, e, map[string]any{"device_id": "TST-G01", "event": "APP_STARTED"})
+	if list, _ := e.s.db.OpenIncidents(); len(list) != 0 {
+		t.Fatalf("INFO opened an incident: %+v", list)
+	}
+	postEvent(t, e, map[string]any{"device_id": "TST-G01", "event": "READER_NOT_READY"})
+	e.now = e.now.Add(3 * time.Minute)
+	postEvent(t, e, map[string]any{"device_id": "TST-G01", "event": "READER_NOT_READY"})
+	postEvent(t, e, map[string]any{"device_id": "TST-G01", "event": "CARD_READ_TIMEOUT"})
+	var fleet struct{ Incidents []model.Incident }
+	e.get(t, "/v1/fleet", &fleet)
+	if len(fleet.Incidents) != 1 || fleet.Incidents[0].Count != 3 || fleet.Incidents[0].Severity != "HIGH" ||
+		fleet.Incidents[0].Codes["READER_NOT_READY"] != 2 {
+		t.Fatalf("incidents: %+v", fleet.Incidents)
+	}
+	// The gate dies: counted in the same incident, which stays open while DOWN.
+	e.now = e.now.Add(15 * time.Minute)
+	if err := e.s.TrackStatus(e.now, started.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	e.get(t, "/v1/fleet", &fleet)
+	if len(fleet.Incidents) != 1 || fleet.Incidents[0].Codes[model.StatusDownEvent] != 1 || fleet.Incidents[0].ResolvedAt != "" {
+		t.Fatalf("after DOWN: %+v", fleet.Incidents)
+	}
+	// Back online and quiet for the gap: resolved.
+	e.do(http.MethodPost, "/v1/heartbeat", testToken, map[string]any{"device_id": "TST-G01"})
+	e.now = e.now.Add(11 * time.Minute)
+	e.do(http.MethodPost, "/v1/heartbeat", testToken, map[string]any{"device_id": "TST-G01"})
+	if err := e.s.TrackStatus(e.now, started.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	e.get(t, "/v1/fleet", &fleet)
+	if len(fleet.Incidents) != 0 {
+		t.Fatalf("not resolved: %+v", fleet.Incidents)
+	}
+	var dev struct{ Incidents []model.Incident }
+	e.get(t, "/v1/devices/TST-G01", &dev)
+	if len(dev.Incidents) != 1 || dev.Incidents[0].ResolvedAt == "" || dev.Incidents[0].Count != 4 {
+		t.Fatalf("device incidents: %+v", dev.Incidents)
+	}
+	// New trouble after the gap opens a second incident.
+	postEvent(t, e, map[string]any{"device_id": "TST-G01", "event": "READER_NOT_READY"})
+	e.get(t, "/v1/devices/TST-G01", &dev)
+	if len(dev.Incidents) != 2 {
+		t.Fatalf("second incident not opened: %+v", dev.Incidents)
 	}
 }

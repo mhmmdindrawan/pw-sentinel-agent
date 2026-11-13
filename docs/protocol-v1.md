@@ -224,6 +224,38 @@ are not stored as events; they update the device's row in `device_state`.
 Because `gate_name`/`gate`/`pos` ride on the heartbeat, renaming a gate in
 the kiosk app reaches the dashboard within a minute, with no agent restart.
 
+### Catch-all events and repeats
+
+Events named `LOG_<LOGGER>__<FUNCTION>` are what a kiosk's logging handler
+forwards for every `logger.warning/error`. They are kept, but a log line is
+never a confirmed gate fault: WARNING is stored as LOW and ERROR/CRITICAL
+as at most MEDIUM, so only structured events colour a gate red.
+
+After `ingest.squelch_per_hour` (default 20) events with the same name from
+one device within an hour, the agent stops storing them individually: each
+further one is acknowledged with **200** (so the SDK clears it from its
+outbox) and counted, and when the hour ends one summary event is stored
+with the same name and code, message "Berulang N× lagi …" and
+`context.squelched_count = N`. The next hour starts fresh. UNMAPPED events
+are never squelched.
+
+### Incidents
+
+Consecutive MEDIUM+ events on one device, and the device going DOWN
+(counted as the pseudo event `GATE_DOWN`), share one incident row until the
+device has been online and quiet for `incident.gap_minutes` (default 10).
+`GET /v1/fleet` carries `incidents` (open ones) and `GET /v1/devices/{id}`
+the device's last 20:
+
+```json
+{"id": 12, "device_id": "PCC-G01-POS01", "location": "PCC", "gate": "G01",
+ "started_at": "…", "last_at": "…", "resolved_at": "", "count": 7,
+ "severity": "HIGH", "codes": {"READER_NOT_READY": 5, "GATE_OPEN_FAILED": 2}}
+```
+
+Telegram receives one message per incident and route, edited as it grows
+and when it resolves; see CHANGELOG v0.6.0.
+
 ### Liveness and gate colour
 
 A device's *last seen* is its latest heartbeat or event (UNMAPPED events

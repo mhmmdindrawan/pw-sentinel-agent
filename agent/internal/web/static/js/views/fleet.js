@@ -6,7 +6,7 @@ import { h, setText, debounce } from "../core/dom.js";
 import { api } from "../core/api.js";
 import { Poller } from "../core/poller.js";
 import { connection } from "../core/connection.js";
-import { nf, fmtClock, fmtBytes, fmtVersion, statusLabel, platformLabel, eventLabel, shortCode } from "../core/format.js";
+import { nf, fmtClock, fmtBytes, fmtVersion, fmtSinceDuration, statusLabel, platformLabel, eventLabel, shortCode, incidentCodes } from "../core/format.js";
 import { agoEl, setAgo, sinceEl, setSince } from "../core/ticker.js";
 import { statusBadge, statusIcon, sevBadge } from "../ui/badges.js";
 import { tile } from "../ui/tile.js";
@@ -26,6 +26,8 @@ export function mount(root, _params, ctx) {
   // Where support is looking: site code/name and how this agent is reached.
   const siteLine = h("div", { class: "site-line muted small", hidden: true });
   const agentNotice = h("div", { class: "notice", hidden: true });
+  // Open incidents: one line per gate in trouble, newest activity first.
+  const incidentsBox = h("section", { class: "incidents", "aria-label": "Insiden aktif", hidden: true });
 
   const locSelect = h("select", { "aria-label": "Filter lokasi" }, h("option", { value: "", text: "Semua lokasi" }));
   locSelect.addEventListener("change", () => { filter.location = locSelect.value; applyFilter(); });
@@ -39,6 +41,7 @@ export function mount(root, _params, ctx) {
     h("div", { class: "pagehead" }, h("div", {}, h("h1", { tabindex: "-1", text: "Ringkasan gate" }), siteLine, updated)),
     h("div", { class: "tiles" }, tTotal, tRed, tYellow, tGreen),
     agentNotice,
+    incidentsBox,
     unmapped,
     h("div", { class: "controls" }, locSelect, search),
     sectionsEl, empty);
@@ -61,6 +64,7 @@ export function mount(root, _params, ctx) {
     tGreen.update(nf.format(count("green")));
 
     renderSite(data.site || {}, data.agent || {});
+    renderIncidents(data.incidents || []);
     if (data.unmapped_24h) {
       unmapped.replaceChildren(
         `${nf.format(data.unmapped_24h)} event dalam 24 jam terakhir datang dari kiosk yang device_id-nya tidak cocok dengan tokennya (UNMAPPED). `,
@@ -109,6 +113,24 @@ export function mount(root, _params, ctx) {
     }
     renderUpdated();
     applyFilter();
+  }
+
+  let incidentsKey = "";
+  function renderIncidents(list) {
+    const key = JSON.stringify(list.map((i) => [i.id, i.count, i.last_at]));
+    if (key === incidentsKey) return;
+    incidentsKey = key;
+    incidentsBox.hidden = !list.length;
+    if (!list.length) { incidentsBox.replaceChildren(); return; }
+    const byName = new Map(devices.map((d) => [d.device_id, d.name]));
+    const sorted = [...list].sort((a, b) => (a.last_at < b.last_at ? 1 : -1));
+    incidentsBox.replaceChildren(
+      h("h2", {}, "Insiden aktif ", h("span", { class: "muted small", text: nf.format(list.length) + " gate bermasalah" })),
+      h("ul", { class: "incident-list" }, sorted.map((i) => h("li", { class: "incident " + (i.severity === "HIGH" || i.severity === "CRITICAL" ? "red" : "yellow") },
+        h("a", { href: "#/device/" + encodeURIComponent(i.device_id) },
+          h("b", { text: i.location + " " + i.gate + (byName.get(i.device_id) ? " · " + byName.get(i.device_id) : "") })),
+        h("span", { class: "muted small", text: " sejak " + fmtClock(new Date(i.started_at)) + " · " + fmtSinceDuration(i.started_at) + " · " + nf.format(i.count) + " event" }),
+        h("div", { class: "codes muted small", text: incidentCodes(i.codes) })))));
   }
 
   let siteKey = "";

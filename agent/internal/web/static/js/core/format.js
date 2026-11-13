@@ -99,6 +99,7 @@ export const EVENT_LABEL = {
   DATABASE_ERROR: "Database error", DEVICE_ERROR: "Perangkat error",
   GATE_OPEN_FAILED: "Palang tidak terbuka", PCLESS_DISCONNECTED: "Palang (PCLess) terputus",
   SYSTEM_ERROR: "Sistem error", SENTINEL_GAP: "Kiosk sempat tidak terhubung ke Sentinel",
+  GATE_DOWN: "Gate mati (tidak ada kabar)",
 };
 
 // eventLabel: "Pembaca kartu tidak siap"; catch-all log events
@@ -112,6 +113,14 @@ export function eventLabel(name) {
     return "Log aplikasi: " + (src || "root") + (fn ? " / " + fn.toLowerCase() : "");
   }
   return name;
+}
+
+// incidentCodes: "Pembaca kartu tidak siap ×5 · Palang tidak terbuka ×2 · +1 lain"
+export function incidentCodes(codes, max = 3) {
+  const rows = Object.entries(codes || {}).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const shown = rows.slice(0, max).map(([k, n]) => eventLabel(k) + " ×" + nf.format(n));
+  if (rows.length > max) shown.push("+" + (rows.length - max) + " lain");
+  return shown.join(" · ");
 }
 
 // shortCode: "APP-010" from "DEV-G01-APP-010" — the gate is already in its

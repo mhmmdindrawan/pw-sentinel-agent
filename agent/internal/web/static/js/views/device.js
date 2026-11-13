@@ -5,7 +5,7 @@
 import { h, setText } from "../core/dom.js";
 import { api, ApiError } from "../core/api.js";
 import { Poller } from "../core/poller.js";
-import { nf, fmtTime, fmtDuration, fmtSinceDuration, STATUS_TEXT, statusLabel, platformLabel, eventLabel, shortCode } from "../core/format.js";
+import { nf, fmtTime, fmtDuration, fmtSinceDuration, STATUS_TEXT, statusLabel, platformLabel, eventLabel, shortCode, incidentCodes } from "../core/format.js";
 import { agoEl, setAgo, sinceEl, setSince } from "../core/ticker.js";
 import { statusBadge, sevBadge } from "../ui/badges.js";
 import { tile } from "../ui/tile.js";
@@ -38,6 +38,11 @@ export function mount(root, params, ctx) {
   const chart = hourlyChart();
   const summaryBox = h("div", { class: "panel table-wrap" }, h("p", { class: "muted", text: "Memuat…" }));
   const historyBox = h("div", { class: "panel table-wrap" }, h("p", { class: "muted", text: "Memuat…" }));
+  // Five columns scroll sideways on a phone, so the wrapper is keyboard-reachable.
+  const incidentBox = h("div", { class: "panel table-wrap", tabindex: "0", role: "region", "aria-label": "Tabel insiden" }, h("p", { class: "muted", text: "Memuat…" }));
+  // Shown when one event name dominates the day: that is log noise for
+  // the developer to turn into a structured event, not a gate fault.
+  const noisy = h("div", { class: "notice", hidden: true });
   const events = eventList({ fixed: { device_id: id }, onAuthError: ctx.onAuthError });
 
   const body = h("div", {},
@@ -52,9 +57,12 @@ export function mount(root, params, ctx) {
       infoItem("sdk", "Versi SDK"),
       infoItem("addr", "Alamat"),
       infoItem("pos", "POS"))),
+    h("h2", { text: "Insiden" }),
+    incidentBox,
     h("h2", { text: "Error per jam (24 jam terakhir)" }),
     h("div", { class: "panel" }, chart),
     h("h2", { text: "Ringkasan kode error (24 jam)" }),
+    noisy,
     summaryBox,
     h("h2", { text: "Riwayat status" }),
     historyBox,
@@ -67,7 +75,7 @@ export function mount(root, params, ctx) {
       h("div", { class: "title-row" }, title, badge), sub)),
     body);
 
-  let summaryKey = "", historyKey = "";
+  let summaryKey = "", historyKey = "", incidentKey = "";
   function apply(data) {
     if (data.notFound) {
       poller.stop();
@@ -106,6 +114,12 @@ export function mount(root, params, ctx) {
     if (k !== summaryKey) {
       summaryKey = k;
       summaryBox.replaceChildren(summaryTable(data.summary_24h || [], d.device_id));
+      renderNoisy(data.summary_24h || []);
+    }
+    const ik = JSON.stringify((data.incidents || []).map((i) => [i.id, i.count, i.last_at, i.resolved_at]));
+    if (ik !== incidentKey) {
+      incidentKey = ik;
+      incidentBox.replaceChildren(incidentTable(data.incidents || []));
     }
     const hk = JSON.stringify(data.status_history || []);
     if (hk !== historyKey) {
@@ -113,6 +127,20 @@ export function mount(root, params, ctx) {
       historyBox.replaceChildren(historyTable(data.status_history || []));
     }
     events.noticeNewer(d.last_event_at);
+  }
+
+  function renderNoisy(rows) {
+    const top = [...rows].sort((a, b) => b.count - a.count)[0];
+    const total = rows.reduce((n, r) => n + r.count, 0);
+    const show = top && top.count >= 100 && top.count / total >= 0.5;
+    noisy.hidden = !show;
+    if (!show) return;
+    noisy.replaceChildren(
+      h("b", { text: "Event paling berisik: " }),
+      `${eventLabel(top.event)} (${top.event}) ${nf.format(top.count)}× dalam 24 jam — ${Math.round(100 * top.count / total)} % dari semua event gate ini. `,
+      top.event.startsWith("LOG_")
+        ? "Ini log aplikasi yang diteruskan apa adanya; minta developer mengubahnya menjadi satu event terstruktur per transisi (lihat docs/prompt-integrasi-gateout.md)."
+        : "Periksa apakah kiosk mengirim ulang kondisi yang sama setiap siklus.");
   }
 
   const poller = new Poller(async (signal) => {
@@ -125,6 +153,26 @@ export function mount(root, params, ctx) {
   }, { interval: INTERVAL, onData: apply, onAuthError: ctx.onAuthError }).start();
 
   return { poller, destroy: () => { poller.stop(); events.destroy(); } };
+}
+
+// incidentTable lists a gate's incidents newest first: when, how long,
+// how many events and which kinds.
+function incidentTable(rows) {
+  if (!rows.length) return h("p", { class: "muted", text: "Belum ada insiden tercatat." });
+  return h("table", {},
+    h("thead", {}, h("tr", {}, ["Status", "Mulai", "Lama", "Event", "Isi"].map((t, i) => h("th", { scope: "col", class: i === 3 ? "num" : null, text: t })))),
+    h("tbody", {}, rows.map((r) => {
+      const open = !r.resolved_at;
+      const lasted = open
+        ? fmtSinceDuration(r.started_at) + " (berlangsung)"
+        : fmtSinceDuration(new Date(Date.now() - (new Date(r.resolved_at) - new Date(r.started_at))).toISOString());
+      return h("tr", {},
+        h("td", {}, statusBadge(open ? (r.severity === "HIGH" || r.severity === "CRITICAL" ? "red" : "yellow") : "green", open ? "Berlangsung" : "Selesai")),
+        h("td", { text: fmtTime(r.started_at) }),
+        h("td", { text: lasted }),
+        h("td", { class: "num", text: nf.format(r.count) }),
+        h("td", { text: incidentCodes(r.codes, 4) }));
+    })));
 }
 
 // historyTable lists liveness changes newest first, each with how long that

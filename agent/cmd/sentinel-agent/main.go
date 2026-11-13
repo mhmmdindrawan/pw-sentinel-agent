@@ -151,6 +151,7 @@ func serve() {
 
 	go runRetention(ctx, db, cfg.Retention.Days, int64(cfg.Retention.MaxDBMB)<<20)
 	go srv.RunStatusTracker(ctx, 30*time.Second)
+	go srv.RunSquelchFlusher(ctx, time.Minute)
 	if cfg.Monitor.PingURL != "" {
 		go runPing(ctx, db, cfg.Monitor.PingURL, time.Duration(cfg.Monitor.PingIntervalSeconds)*time.Second)
 		log.Printf("monitor: pinging %s every %ds", redactURL(cfg.Monitor.PingURL), cfg.Monitor.PingIntervalSeconds)
@@ -165,8 +166,10 @@ func serve() {
 		if err != nil {
 			log.Fatalf("alert: %v", err)
 		}
+		al.Incidents = !cfg.Incident.Disabled
 		go al.Run(ctx)
-		log.Printf("alerts: Telegram to %d route(s), every %ds", len(cfg.Alert.Routes), cfg.Alert.IntervalSeconds)
+		log.Printf("alerts: Telegram to %d route(s), every %ds, incidents %s", len(cfg.Alert.Routes), cfg.Alert.IntervalSeconds,
+			map[bool]string{true: "on (one message per incident)", false: "off (one message per event)"}[al.Incidents])
 	} else {
 		log.Printf("notice: alerts off (set SENTINEL_TELEGRAM_BOT_TOKEN and alert.routes to enable)")
 	}
@@ -202,6 +205,9 @@ func runRetention(ctx context.Context, db *store.Store, days int, maxBytes int64
 			log.Printf("retention: deleted %d event(s) older than %d days", n, days)
 		}
 		if _, err := db.PurgeStatusHistoryBefore(cutoff.UTC().Format(time.RFC3339)); err != nil {
+			log.Printf("retention: %v", err)
+		}
+		if _, err := db.PurgeIncidentsBefore(cutoff); err != nil {
 			log.Printf("retention: %v", err)
 		}
 		if n, err := db.TrimToSize(maxBytes); err != nil {
@@ -480,7 +486,7 @@ func runAlert(args []string) int {
 	failed := 0
 	for _, r := range cfg.Alert.Routes {
 		msg := fmt.Sprintf("✅ Tes notifikasi Parkways Sentinel (%s)\nRute: %s · min severity %s\nDikirim dari %s.", version, r.Name, r.MinSeverity, host)
-		if err := tg.Send(context.Background(), alert.Destination{ChatID: r.ChatID, ThreadID: r.ThreadID}, msg); err != nil {
+		if _, err := tg.Send(context.Background(), alert.Destination{ChatID: r.ChatID, ThreadID: r.ThreadID}, msg); err != nil {
 			fmt.Printf("%-12s GAGAL: %v\n", r.Name, err)
 			failed++
 		} else {

@@ -101,3 +101,25 @@ CREATE TABLE IF NOT EXISTS agent_kv (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+-- One incident per gate while trouble keeps coming: MEDIUM+ events (and a
+-- DOWN status) within incident.gap_minutes of each other share a row.
+-- codes_json counts events per event name; alert_json tracks the Telegram
+-- message per route so it can be edited instead of re-sent.
+CREATE TABLE IF NOT EXISTS incidents (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id   TEXT NOT NULL,
+    location    TEXT NOT NULL,
+    gate        TEXT NOT NULL,
+    started_at  TEXT NOT NULL,
+    last_at     TEXT NOT NULL,
+    resolved_at TEXT,
+    count       INTEGER NOT NULL DEFAULT 0,
+    severity    TEXT NOT NULL,
+    codes_json  TEXT NOT NULL DEFAULT '{}',
+    alert_json  TEXT NOT NULL DEFAULT '{}',
+    done        INTEGER NOT NULL DEFAULT 0   -- 1 once resolved and every route was told
+);
+CREATE INDEX IF NOT EXISTS idx_incidents_open   ON incidents(device_id, resolved_at);
+CREATE INDEX IF NOT EXISTS idx_incidents_done   ON incidents(done);
+CREATE INDEX IF NOT EXISTS idx_incidents_device ON incidents(device_id, id);

@@ -108,3 +108,19 @@ test("keyboard: skip link and cards are reachable and open the gate", async ({ p
   await page.keyboard.press("Enter");
   await expect(page.getByRole("heading", { name: "STI · G02" })).toBeFocused();
 });
+
+test("open incidents are listed with their gate, duration and event mix", async ({ page }) => {
+  await login(page);
+  const box = page.getByRole("region", { name: "Insiden aktif" });
+  await expect(box).toBeVisible();
+  // STI-G02 has recent HIGH events, STI-G04 is DOWN: both are incidents.
+  const g02 = box.locator("li.incident").filter({ hasText: "STI G02" });
+  await expect(g02).toHaveClass(/red/);
+  await expect(g02).toContainText("Pembaca kartu tidak siap ×2");
+  await expect(box.locator("li.incident").filter({ hasText: "STI G04" })).toContainText("Gate mati");
+  // Clicking goes to the gate, whose page lists the incident as ongoing.
+  await g02.getByRole("link").click();
+  await expect(page.getByRole("heading", { name: "Insiden" })).toBeVisible();
+  const rows = page.locator("table").filter({ hasText: "Berlangsung" }).first().locator("tbody tr");
+  await expect(rows.first()).toContainText("Berlangsung");
+});
