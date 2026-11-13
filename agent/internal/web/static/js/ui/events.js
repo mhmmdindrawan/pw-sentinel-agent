@@ -11,7 +11,7 @@
 import { h, setText, debounce } from "../core/dom.js";
 import { api, latest, isAbort, AuthError } from "../core/api.js";
 import { connection } from "../core/connection.js";
-import { fmtTime, fmtShort } from "../core/format.js";
+import { fmtTime, fmtShort, eventLabel, shortCode } from "../core/format.js";
 import { agoEl } from "../core/ticker.js";
 import { sevBadge } from "./badges.js";
 
@@ -110,9 +110,9 @@ export function eventList({ fixed = {}, showDevice = false, params = {}, syncUrl
     select("severity", "Severity minimum", [["", "Semua severity"], ["LOW", "LOW ke atas"], ["MEDIUM", "MEDIUM ke atas"], ["HIGH", "HIGH ke atas"], ["CRITICAL", "CRITICAL"]]),
     "location" in fixed || "device_id" in fixed ? null : text("location", "Lokasi", "Lokasi (mis. STI)"),
     "device_id" in fixed ? null : text("device_id", "Device ID", "Device ID"),
-    text("error_code", "Kode error", "Kode error (mis. STI-G03-PAY-002)"));
+    text("error_code", "Kode", "Kode (mis. PAY-002 atau STI-G03-PAY-002)"));
 
-  const head = ["", "Waktu", showDevice ? "Gate" : null, "Kode", "Event", "Severity", "Pesan"].filter((x) => x !== null);
+  const head = ["", "Waktu", showDevice ? "Gate" : null, "Masalah", "Kode", "Severity", "Pesan"].filter((x) => x !== null);
   const el = h("div", { class: "event-list" },
     controls, newer,
     h("div", { class: "panel table-wrap" },
@@ -150,7 +150,7 @@ function eventRows(e, showDevice, cols) {
   const detail = h("tr", { class: "detail", id: detailId, hidden: true },
     h("td", { colspan: cols }, detailPanel(e)));
   const toggle = h("button", { type: "button", class: "expand", "aria-expanded": "false", "aria-controls": detailId,
-    "aria-label": "Detail event " + e.event });
+    "aria-label": "Detail event " + eventLabel(e.event) });
   toggle.append(h("span", { "aria-hidden": "true", text: "▸" }));
   const flip = () => {
     const open = detail.hidden;
@@ -167,8 +167,10 @@ function eventRows(e, showDevice, cols) {
     h("td", { class: "c-toggle" }, toggle),
     h("td", { class: "c-time" }, h("span", { title: fmtTime(when), text: fmtShort(when) }), " ", agoEl(e.received_at, "muted small ago")),
     showDevice ? h("td", { class: "c-gate" }, h("a", { href: "#/device/" + encodeURIComponent(e.device_id), text: e.location + " " + e.gate })) : null,
-    h("td", { class: "c-code mono", text: e.error_code }),
-    h("td", { class: "c-event" }, e.event, coalesced ? h("span", { class: "muted small", text: " ×" + (coalesced + 1) }) : null),
+    h("td", { class: "c-event" }, h("span", { class: "ev-name", text: eventLabel(e.event) }),
+      coalesced ? h("span", { class: "muted small", text: " ×" + (coalesced + 1) }) : null,
+      h("span", { class: "ev-sym muted small mono", text: e.event })),
+    h("td", { class: "c-code mono", title: e.error_code, text: shortCode(e.error_code) }),
     h("td", { class: "c-sev" }, sevBadge(e.severity)),
     h("td", { class: "c-msg msg", text: e.message || "" }));
   // Mouse convenience: clicking the row toggles too, except on links/buttons.
@@ -182,7 +184,7 @@ function eventRows(e, showDevice, cols) {
 // agent returns (context, stack) gets its own block below the list.
 const FIELDS = [
   ["message", "Pesan"], ["occurred_at", "Terjadi di kiosk", fmtTime], ["received_at", "Diterima agent", fmtTime],
-  ["device_id", "Device"], ["device", "Perangkat"], ["app_version", "Versi aplikasi"],
+  ["device_id", "Device ID kiosk"], ["device", "Komponen"], ["app_version", "Versi aplikasi"],
   ["endpoint", "Endpoint"], ["http_status", "HTTP status"], ["duration_ms", "Durasi", (v) => v + " ms"],
   ["retry_count", "Percobaan ulang"], ["transaction_ref", "Ref. transaksi"], ["event_id", "Event ID"],
 ];
@@ -194,11 +196,12 @@ const FIELDS = [
 function detailPanel(e) {
   const dl = h("dl", { class: "ev-fields" });
   for (const [k, label, fmt] of FIELDS) {
+    if (k === "device" && !e[k]) { dl.append(h("div", {}, h("dt", { text: label }), h("dd", { text: "Aplikasi" }))); continue; }
     if (e[k] == null || e[k] === "") continue;
     dl.append(h("div", {}, h("dt", { text: label }), h("dd", { class: k === "message" ? "" : "mono", text: fmt ? fmt(e[k]) : String(e[k]) })));
   }
   const parts = [h("div", { class: "ev-head" },
-    h("span", { class: "mono", text: e.error_code }), " ", h("b", { text: e.event }),
+    h("b", { text: eventLabel(e.event) }), " ", h("span", { class: "mono", text: e.error_code }), " ", h("span", { class: "muted small mono", text: e.event }),
     copyButton(e))];
   parts.push(dl);
   if (e.context && Object.keys(e.context).length) {
@@ -238,7 +241,7 @@ function copyButton(e) {
 export function debugMarkdown(e) {
   const when = e.occurred_at || e.received_at;
   const lines = [
-    `## ${e.error_code} · ${e.event} (${e.severity})`,
+    `## ${eventLabel(e.event)} — ${e.error_code} · ${e.event} (${e.severity})`,
     "",
     `- Gate: ${e.location} ${e.gate}${e.pos ? " " + e.pos : ""} (device_id \`${e.device_id}\`)`,
     `- Waktu: ${fmtTime(when)} (${when})`,

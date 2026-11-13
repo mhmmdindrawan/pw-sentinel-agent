@@ -81,3 +81,44 @@ export function fmtVersion(v) {
 export function platformLabel(p) {
   return p ? PLATFORM_TEXT[p] || p : "";
 }
+
+// Human names for the registry's event names. The table leads with these;
+// the symbolic name stays visible in small print for developers and for
+// matching against the kiosk's source.
+export const EVENT_LABEL = {
+  APP_STARTED: "Aplikasi dimulai", APP_CRASHED: "Aplikasi crash", APP_EXCEPTION: "Kesalahan kode (exception)",
+  PAYMENT_REJECTED: "Pembayaran ditolak", PAYMENT_TIMEOUT: "Pembayaran timeout", INSUFFICIENT_BALANCE: "Saldo tidak cukup",
+  QRIS_NOT_CONFIGURED: "QRIS belum dikonfigurasi",
+  READER_DISCONNECTED: "Pembaca kartu terputus", CARD_READ_TIMEOUT: "Baca kartu timeout",
+  READER_NOT_READY: "Pembaca kartu tidak siap", READER_INIT_FAILED: "Pembaca kartu gagal inisialisasi",
+  PRINTER_DISCONNECTED: "Printer terputus", PRINT_FAILED: "Cetak gagal",
+  LPR_TIMEOUT: "Kamera LPR timeout", LPR_NO_FEED: "Kamera LPR tidak mengirim gambar", CCTV_DISCONNECTED: "CCTV terputus",
+  MQTT_DISCONNECTED: "MQTT terputus", MQTT_CONNECT_FAILED: "MQTT gagal terhubung", MQTT_DISABLED: "MQTT dimatikan",
+  NETWORK_DISCONNECTED: "Jaringan terputus", HIGH_LATENCY: "Jaringan lambat",
+  HTTP_SERVER_ERROR: "Server pembayaran error", HTTP_TIMEOUT: "Server pembayaran timeout", HTTP_CLIENT_ERROR: "Permintaan ke server ditolak",
+  DATABASE_ERROR: "Database error", DEVICE_ERROR: "Perangkat error",
+  GATE_OPEN_FAILED: "Palang tidak terbuka", PCLESS_DISCONNECTED: "Palang (PCLess) terputus",
+  SYSTEM_ERROR: "Sistem error", SENTINEL_GAP: "Kiosk sempat tidak terhubung ke Sentinel",
+};
+
+// eventLabel: "Pembaca kartu tidak siap"; catch-all log events
+// (LOG_<LOGGER>__<FUNC>) read as "Log aplikasi: cashless.server / request".
+export function eventLabel(name) {
+  if (!name) return "";
+  if (EVENT_LABEL[name]) return EVENT_LABEL[name];
+  if (name.startsWith("LOG_")) {
+    const [logger, fn] = name.slice(4).split("__");
+    const src = (logger || "").toLowerCase().replace(/_/g, ".");
+    return "Log aplikasi: " + (src || "root") + (fn ? " / " + fn.toLowerCase() : "");
+  }
+  return name;
+}
+
+// shortCode: "APP-010" from "DEV-G01-APP-010" — the gate is already in its
+// own column, so the code only needs to say what, not where.
+export function shortCode(code) {
+  if (!code) return "";
+  const parts = code.split("-");
+  return parts.length >= 4 ? parts.slice(-2).join("-") : code;
+}
+

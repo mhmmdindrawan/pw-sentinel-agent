@@ -5,7 +5,7 @@
 import { h, setText } from "../core/dom.js";
 import { api, ApiError } from "../core/api.js";
 import { Poller } from "../core/poller.js";
-import { nf, fmtTime, fmtDuration, fmtSinceDuration, STATUS_TEXT, statusLabel, platformLabel } from "../core/format.js";
+import { nf, fmtTime, fmtDuration, fmtSinceDuration, STATUS_TEXT, statusLabel, platformLabel, eventLabel, shortCode } from "../core/format.js";
 import { agoEl, setAgo, sinceEl, setSince } from "../core/ticker.js";
 import { statusBadge, sevBadge } from "../ui/badges.js";
 import { tile } from "../ui/tile.js";
@@ -148,10 +148,11 @@ function historyTable(rows) {
 function summaryTable(rows, deviceId) {
   if (!rows.length) return h("p", { class: "muted", text: "Tidak ada event dalam 24 jam terakhir." });
   return h("table", {},
-    h("thead", {}, h("tr", {}, ["Kode", "Event", "Severity", "Jumlah", "Terakhir"].map((t, i) => h("th", { scope: "col", class: i === 3 ? "num" : null, text: t })))),
+    h("thead", {}, h("tr", {}, ["Masalah", "Kode", "Severity", "Jumlah", "Terakhir"].map((t, i) => h("th", { scope: "col", class: i === 3 ? "num" : null, text: t })))),
     h("tbody", {}, rows.map((r) => h("tr", {},
-      h("td", {}, h("a", { class: "mono", href: "#/events?device_id=" + encodeURIComponent(deviceId) + "&error_code=" + encodeURIComponent(r.error_code), text: r.error_code })),
-      h("td", { text: r.event }),
+      h("td", {}, h("a", { class: "ev-link", href: "#/events?device_id=" + encodeURIComponent(deviceId) + "&error_code=" + encodeURIComponent(r.error_code) },
+        eventLabel(r.event), " ", h("span", { class: "muted small mono", text: r.event }))),
+      h("td", { class: "mono", title: r.error_code, text: shortCode(r.error_code) }),
       h("td", {}, sevBadge(r.severity)),
       h("td", { class: "num", text: nf.format(r.count) }),
       h("td", {}, agoEl(r.last_seen))))));

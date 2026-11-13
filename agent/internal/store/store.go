@@ -223,7 +223,13 @@ func eventWhere(f model.EventFilter) (string, []any) {
 		add("gate = ?", strings.ToUpper(f.Gate))
 	}
 	if f.ErrorCode != "" {
-		add("error_code = ?", strings.ToUpper(f.ErrorCode))
+		code := strings.ToUpper(strings.TrimSpace(f.ErrorCode))
+		if strings.Count(code, "-") < 3 {
+			// "PAY-002" as the dashboard shows it: match the code's tail.
+			add("error_code LIKE ?", "%-"+code)
+		} else {
+			add("error_code = ?", code)
+		}
 	}
 	if f.Event != "" {
 		add("event_name = ?", f.Event)
