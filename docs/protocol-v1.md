@@ -231,7 +231,7 @@ forwards for every `logger.warning/error`. They are kept, but a log line is
 never a confirmed gate fault: WARNING is stored as LOW and ERROR/CRITICAL
 as at most MEDIUM, so only structured events colour a gate red.
 
-After `ingest.squelch_per_hour` (default 20) events with the same name from
+After `ingest.squelch_per_hour` (default 20; `-1` disables) events with the same name from
 one device within an hour, the agent stops storing them individually: each
 further one is acknowledged with **200** (so the SDK clears it from its
 outbox) and counted, and when the hour ends one summary event is stored
