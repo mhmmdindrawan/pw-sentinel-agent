@@ -215,7 +215,8 @@ heartbeating and shows up as STALE/DOWN.
 | `outbox_pending` | int    | Events queued on the kiosk, not yet delivered. A non-zero value colours the gate yellow. |
 | `outbox_dropped` | int    | Events the SDK discarded since it started (queue/outbox full). |
 | `sent_at`        | string (RFC3339) | Client clock; informational. |
-| `platform`       | string | Product variant/OS: `tongbao` (MQTT + hardware, Lubuntu ARM), `windows`, `linux`. Lower-cased by the agent, kept until the next value. Shown on the gate card so MQTT events are read in context. |
+| `platform`       | string | Product variant/OS: `tongbao` (Lubuntu ARM + gate hardware), `windows`, `linux`. Lower-cased by the agent, kept until the next value. Shown on the gate card so hardware events are read in context. |
+| `transport`      | string | *(v0.6.1)* How the kiosk reaches its gate hardware: `mqtt` or `tcp` (a Tongbao runs either). Lower-cased; anything other than a short word (`a–z 0–9 - _`, ≤ 16 chars) is ignored. Kept until the next value, shown as "Tongbao · MQTT". Older agents ignore it. SDK: `SentinelClient(transport=...)` (0.4.0). |
 | `gate_name`      | string | Human label of the gate as set in the kiosk app's settings (≤ 64 chars). Updates the card/detail title for any device. |
 | `gate`, `pos`    | string | Identity the kiosk claims for itself. For an **enrolled** device a change moves it (its future events get the new gate/pos; logged as "moved itself"). For a static `devices.yaml` device these are ignored — gate is the operator's decision. |
 

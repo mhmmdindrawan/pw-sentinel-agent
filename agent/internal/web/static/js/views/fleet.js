@@ -6,7 +6,7 @@ import { h, setText, debounce } from "../core/dom.js";
 import { api } from "../core/api.js";
 import { Poller } from "../core/poller.js";
 import { connection } from "../core/connection.js";
-import { nf, fmtClock, fmtBytes, fmtVersion, fmtSinceDuration, statusLabel, platformLabel, eventLabel, shortCode, incidentCodes } from "../core/format.js";
+import { nf, fmtClock, fmtBytes, fmtVersion, fmtSinceDuration, statusLabel, platformTransport, eventLabel, shortCode, incidentCodes } from "../core/format.js";
 import { agoEl, setAgo, sinceEl, setSince } from "../core/ticker.js";
 import { statusBadge, statusIcon, sevBadge } from "../ui/badges.js";
 import { tile } from "../ui/tile.js";
@@ -253,7 +253,7 @@ function gateCard() {
     badge.update(d.color, statusLabel(d));
     setText(name, d.name || "");
     name.hidden = !d.name;
-    setText(ident, [d.device_id, d.remote_addr, platformLabel(d.platform), fmtVersion(d.app_version)].filter(Boolean).join(" · "));
+    setText(ident, [d.device_id, d.remote_addr, platformTransport(d), fmtVersion(d.app_version)].filter(Boolean).join(" · "));
     // "Mati sejak 10.58 · 12 mnt" only while the gate is not simply online.
     setSince(since, d.status === "ONLINE" ? "" : d.status_since, STATUS_TEXT_SINCE[d.status]);
     since.hidden = d.status === "ONLINE" || !d.status_since;

@@ -14,6 +14,10 @@ type Heartbeat struct {
 	// Platform names the product variant/OS so the dashboard can tell a
 	// Tongbao (MQTT + Lubuntu ARM) kiosk from a Windows or Linux one.
 	Platform string `json:"platform,omitempty"`
+	// Transport is how the kiosk talks to its gate hardware ("mqtt" or
+	// "tcp" on Tongbao). One platform runs either, and the same event reads
+	// differently on each, so the dashboard shows it next to the platform.
+	Transport string `json:"transport,omitempty"`
 	// What the kiosk says about itself, set from the gate-out app's own
 	// settings so support never has to edit the agent. Name is kept for
 	// every device; Gate/POS only move an *enrolled* device.
@@ -48,6 +52,7 @@ type DeviceState struct {
 	OutboxDropped   int    `json:"outbox_dropped"`
 	RemoteAddr      string `json:"remote_addr,omitempty"`
 	Platform        string `json:"platform,omitempty"`
+	Transport       string `json:"transport,omitempty"`
 	Name            string `json:"name,omitempty"`
 }
 

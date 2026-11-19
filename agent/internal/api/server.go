@@ -459,6 +459,7 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		OutboxDropped:   hb.OutboxDropped,
 		RemoteAddr:      remoteIP(r),
 		Platform:        strings.ToLower(strings.TrimSpace(hb.Platform)),
+		Transport:       cleanTransport(hb.Transport),
 		Name:            trimName(hb.Name),
 	}
 	if err := s.db.UpsertHeartbeat(st); err != nil {
@@ -468,6 +469,22 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 	s.applyIdentityClaims(dev, hb, now)
 	// server_time lets the SDK notice a badly skewed kiosk clock.
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "server_time": now.Format(time.RFC3339)})
+}
+
+// cleanTransport keeps a short lower-case word ("mqtt", "tcp") and drops
+// anything else, so a kiosk bug can't put arbitrary text on the gate card.
+// Empty means "not reported", which keeps the last known value.
+func cleanTransport(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if len(s) == 0 || len(s) > 16 {
+		return ""
+	}
+	for _, c := range s {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' && c != '_' {
+			return ""
+		}
+	}
+	return s
 }
 
 // bearerToken extracts the token from "Authorization: Bearer <token>",

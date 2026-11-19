@@ -31,8 +31,8 @@ func (s *Store) TouchEventSeen(deviceID, at, appVersion string) error {
 func (s *Store) UpsertHeartbeat(st model.DeviceState) error {
 	_, err := s.db.Exec(`
 		INSERT INTO device_state (device_id, last_heartbeat_at, app_version, sdk_version,
-		                          uptime_s, outbox_pending, outbox_dropped, remote_addr, platform, name)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		                          uptime_s, outbox_pending, outbox_dropped, remote_addr, platform, name, transport)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(device_id) DO UPDATE SET
 			last_heartbeat_at = excluded.last_heartbeat_at,
 			app_version       = COALESCE(excluded.app_version, device_state.app_version),
@@ -42,9 +42,11 @@ func (s *Store) UpsertHeartbeat(st model.DeviceState) error {
 			outbox_dropped    = excluded.outbox_dropped,
 			remote_addr       = excluded.remote_addr,
 			platform          = COALESCE(excluded.platform, device_state.platform),
-			name              = COALESCE(excluded.name, device_state.name)`,
+			name              = COALESCE(excluded.name, device_state.name),
+			transport         = COALESCE(excluded.transport, device_state.transport)`,
 		st.DeviceID, st.LastHeartbeatAt, nullable(st.AppVersion), nullable(st.SDKVersion),
-		st.UptimeS, st.OutboxPending, st.OutboxDropped, nullable(st.RemoteAddr), nullable(st.Platform), nullable(st.Name))
+		st.UptimeS, st.OutboxPending, st.OutboxDropped, nullable(st.RemoteAddr), nullable(st.Platform), nullable(st.Name),
+		nullable(st.Transport))
 	if err != nil {
 		return fmt.Errorf("upsert heartbeat: %w", err)
 	}
@@ -55,7 +57,7 @@ func (s *Store) UpsertHeartbeat(st model.DeviceState) error {
 func (s *Store) DeviceStates() (map[string]model.DeviceState, error) {
 	rows, err := s.db.Query(`
 		SELECT device_id, last_heartbeat_at, last_event_at, app_version, sdk_version,
-		       uptime_s, outbox_pending, outbox_dropped, remote_addr, platform, name
+		       uptime_s, outbox_pending, outbox_dropped, remote_addr, platform, name, transport
 		FROM device_state`)
 	if err != nil {
 		return nil, fmt.Errorf("query device_state: %w", err)
@@ -65,14 +67,14 @@ func (s *Store) DeviceStates() (map[string]model.DeviceState, error) {
 	out := map[string]model.DeviceState{}
 	for rows.Next() {
 		var st model.DeviceState
-		var hb, ev, appV, sdkV, addr, platform, name sql.NullString
+		var hb, ev, appV, sdkV, addr, platform, name, transport sql.NullString
 		if err := rows.Scan(&st.DeviceID, &hb, &ev, &appV, &sdkV,
-			&st.UptimeS, &st.OutboxPending, &st.OutboxDropped, &addr, &platform, &name); err != nil {
+			&st.UptimeS, &st.OutboxPending, &st.OutboxDropped, &addr, &platform, &name, &transport); err != nil {
 			return nil, fmt.Errorf("scan device_state: %w", err)
 		}
 		st.LastHeartbeatAt, st.LastEventAt = hb.String, ev.String
 		st.AppVersion, st.SDKVersion, st.RemoteAddr = appV.String, sdkV.String, addr.String
-		st.Platform, st.Name = platform.String, name.String
+		st.Platform, st.Name, st.Transport = platform.String, name.String, transport.String
 		out[st.DeviceID] = st
 	}
 	return out, rows.Err()

@@ -53,12 +53,15 @@ async function stop() {
   }
 }
 
+// What some live gates say about their hardware link (Tongbao runs either).
+const HW = { "STI-G01-POS01": { platform: "tongbao", transport: "mqtt" }, "STI-G06-POS01": { platform: "tongbao", transport: "tcp" } };
+
 // heartbeat keeps the live demo gates ONLINE for the duration of a test.
 async function heartbeat() {
   await Promise.all(LIVE.map(([id, outbox]) => fetch(BASE + "/v1/heartbeat", {
     method: "POST",
     headers: { Authorization: "Bearer demo-token-" + id, "Content-Type": "application/json" },
-    body: JSON.stringify({ device_id: id, app_version: "3.1.4", sdk_version: "0.2.0", uptime_s: 32520, outbox_pending: outbox }),
+    body: JSON.stringify({ device_id: id, app_version: "3.1.4", sdk_version: "0.2.0", uptime_s: 32520, outbox_pending: outbox, ...HW[id] }),
   })));
 }
 

@@ -51,7 +51,7 @@ from datetime import datetime, timezone
 from .events import APP_EXCEPTION, HIGH_PRIORITY, SENTINEL_GAP
 from .outbox import MemoryOutbox, SqliteOutbox
 
-SDK_VERSION = "0.3.0"
+SDK_VERSION = "0.4.0"
 
 # Frames kept from a traceback (innermost last); enough to locate a bug
 # without shipping the whole call chain.
@@ -172,6 +172,7 @@ class SentinelClient:
         gate=None,
         gate_name=None,
         pos=None,
+        transport=None,
     ):
         """`device_id` must uniquely and stably identify this kiosk/gate
         machine and must correspond to an entry (and its token) in the
@@ -198,10 +199,16 @@ class SentinelClient:
         taken from the gate-out app's own settings. They ride on every
         heartbeat: the agent keeps the name for any device and moves an
         *enrolled* device to the new gate/pos when the settings change, so
-        support never edits the agent."""
+        support never edits the agent.
+
+        `transport` is how the kiosk reaches its gate hardware, "mqtt" or
+        "tcp" on Tongbao. It rides on every heartbeat and shows on the gate
+        card next to the platform ("Tongbao · MQTT"); agents before v0.6.1
+        ignore it."""
         self._device_id = device_id
         self._platform = platform or _default_platform()
-        self._identity = {k: v for k, v in (("gate", gate), ("gate_name", gate_name), ("pos", pos)) if v}
+        self._identity = {k: v for k, v in (("gate", gate), ("gate_name", gate_name), ("pos", pos),
+                                            ("transport", transport)) if v}
         base = base_url.rstrip("/")
         self._url_event = base + "/v1/events"
         self._url_batch = base + "/v1/events/batch"

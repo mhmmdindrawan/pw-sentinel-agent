@@ -57,6 +57,7 @@ func Open(dbPath string) (*Store, error) {
 		{"events", "stack", "TEXT"},
 		{"device_state", "platform", "TEXT"},
 		{"device_state", "name", "TEXT"},
+		{"device_state", "transport", "TEXT"},
 	} {
 		if err := ensureColumn(db, m.table, m.column, m.typ); err != nil {
 			db.Close()

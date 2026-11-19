@@ -17,6 +17,15 @@ test("gate detail shows status, tiles, chart and summary", async ({ page }) => {
   await expect(page.getByText("dari devices.yaml")).toBeVisible();
 });
 
+test("gate detail shows the hardware link", async ({ page }) => {
+  await login(page, "#/device/STI-G06-POS01");
+  const row = page.locator(".dl div").filter({ has: page.locator("dt", { hasText: "Koneksi hardware" }) });
+  await expect(row.locator("dd")).toHaveText("TCP");
+  await page.evaluate(() => { location.hash = "#/device/LBI-G01-POS01"; });
+  await expect(page.getByRole("heading", { name: /^LBI · G01/ })).toBeVisible();
+  await expect(page.locator(".dl div").filter({ has: page.locator("dt", { hasText: "Koneksi hardware" }) }).locator("dd")).toHaveText("—");
+});
+
 test("new events show a notice instead of reshuffling open rows", async ({ page }) => {
   await page.clock.install();
   await login(page, "#/device/STI-G06-POS01");

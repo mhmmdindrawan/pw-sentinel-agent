@@ -42,6 +42,16 @@ test("site line names the location and the agent; cards carry gate names", async
   await expect(card(page, "STI-G04-POS01")).toBeVisible();
 });
 
+test("cards show platform and hardware link (MQTT/TCP)", async ({ page }) => {
+  await login(page);
+  const card = (id) => page.locator(`a.card[href="#/device/${id}"]`);
+  await expect(card("STI-G01-POS01")).toContainText("Tongbao · MQTT");
+  await expect(card("STI-G06-POS01")).toContainText("Tongbao · TCP");
+  // A kiosk that reports neither shows no empty separator.
+  await expect(card("LBI-G01-POS01")).not.toContainText("Tongbao");
+  await expect(card("LBI-G01-POS01")).not.toContainText("·  ·");
+});
+
 test("refresh updates cards in place: focus, typed search and scroll survive", async ({ page }) => {
   await page.clock.install();
   await login(page);

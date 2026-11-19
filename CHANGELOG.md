@@ -5,6 +5,57 @@ harus dilakukan operator saat upgrade (restart, ubah config, migrasi).
 Release notes di GitHub diambil otomatis dari bagian tag yang bersangkutan
 (`.github/workflows/release.yml`).
 
+## [v0.6.1] - belum dirilis
+
+Usulan dari integrasi kiosk Tongbao (MQTT dan TCP).
+
+### Agent
+- Event baru di `registry.yaml`, sehingga kodenya sama di semua lokasi
+  (sebelumnya event ini diberi nomor sendiri oleh tiap agent):
+
+  | Event | Kode | Severity |
+  |---|---|---|
+  | `READER_RECOVERED` | READER-005 | INFO |
+  | `LPR_RECOVERED` | LPR-003 | INFO |
+  | `CCTV_RECOVERED` | CCTV-002 | INFO |
+  | `MQTT_RECOVERED` | MQTT-004 | INFO |
+  | `GATEWAY_SILENT` | MQTT-005 | HIGH |
+  | `SERVER_RECOVERED` | API-004 | INFO |
+  | `PCLESS_RECOVERED` | DEVICE-004 | INFO |
+  | `CLOCK_SKEW` | SYS-002 | LOW |
+
+  Event pulih berseverity INFO: tercatat di riwayat, tidak pernah
+  mewarnai gate atau membuka insiden.
+- Heartbeat membawa `transport` (`mqtt`/`tcp`). Kartu gate menampilkan
+  "Tongbao · MQTT" / "Tongbao · TCP", halaman detail punya baris
+  **Koneksi hardware**. Nilai selain kata pendek diabaikan; heartbeat tanpa
+  field ini mempertahankan nilai terakhir. Kolom database baru ditambahkan
+  otomatis saat agent start (diuji pada salinan database BBD).
+- Label bahasa Indonesia untuk event baru di dashboard dan Telegram.
+- Tes baru memastikan setiap event di `registry.yaml` punya label di
+  dashboard dan Telegram, dan konstanta di SDK Python.
+
+### SDK Python (0.4.0)
+- Konstanta untuk event baru di `parkways_sentinel.events`;
+  `GATEWAY_SILENT` masuk `HIGH_PRIORITY`.
+- `SentinelClient(transport="mqtt"|"tcp")` mengirim `transport` di setiap
+  heartbeat. Kiosk yang sudah menambahkannya lewat subclass tetap jalan;
+  subclass boleh dihapus saat SDK vendor diperbarui.
+
+### Pemasangan
+- `deploy/setup-lokasi.sh`: folder bawaan `~/sentinel`; pemasangan lama
+  (mis. `~/sentinel-local`) dipakai terus. Penjaga IP `sentinel-ipwatch`
+  menyalakan ulang Sentinel kalau IP Tailscale berubah.
+- `deploy/setup-lokasi.bat` + `setup-lokasi.ps1`: pemasangan di server
+  Windows (folder bawaan `D:\ParkwaysSentinel`, task terjadwal SYSTEM).
+
+### Perlu tindakan
+- Ganti `registry.yaml` bersama binary (setup-lokasi melakukannya
+  otomatis, yang lama disimpan sebagai `registry.yaml.bak`).
+- Lokasi yang sudah pernah menerima event-event di atas sebelum upgrade:
+  nomor yang dulu dibuat agent diganti nomor registry. Riwayat lama tetap
+  memakai kode lama.
+
 ## [v0.6.0] - belum dirilis
 
 Hasil memantau kiosk nyata 24 jam di PC uji: 91 % event adalah `LOG_*`

@@ -581,6 +581,37 @@ func TestStackIsStoredAndCapped(t *testing.T) {
 	}
 }
 
+func TestHeartbeatTransport(t *testing.T) {
+	e := newTestServer(t)
+	beat := func(body map[string]any) string {
+		t.Helper()
+		body["device_id"] = "TST-G01"
+		if rec := e.do(http.MethodPost, "/v1/heartbeat", testToken, body); rec.Code != http.StatusOK {
+			t.Fatalf("heartbeat %v: %d %s", body, rec.Code, rec.Body.String())
+		}
+		return e.fleet(t)["TST-G01"].Transport
+	}
+	if got := beat(map[string]any{"platform": "tongbao", "transport": " MQTT "}); got != "mqtt" {
+		t.Fatalf("transport = %q, want mqtt", got)
+	}
+	// An SDK without the field (or an older kiosk build) keeps the last value.
+	if got := beat(map[string]any{}); got != "mqtt" {
+		t.Fatalf("missing transport must keep the last one, got %q", got)
+	}
+	if got := beat(map[string]any{"transport": "tcp"}); got != "tcp" {
+		t.Fatalf("switch to tcp: got %q", got)
+	}
+	for _, bad := range []string{"<b>x</b>", "mqtt tcp", strings.Repeat("a", 17), "tcp\n"} {
+		if got := beat(map[string]any{"transport": bad}); got != "tcp" {
+			t.Fatalf("transport %q must be ignored, got %q", bad, got)
+		}
+	}
+	// A non-string transport is a malformed heartbeat, not a crash.
+	if rec := e.do(http.MethodPost, "/v1/heartbeat", testToken, map[string]any{"device_id": "TST-G01", "transport": 5}); rec.Code != http.StatusBadRequest {
+		t.Fatalf("numeric transport: %d", rec.Code)
+	}
+}
+
 func TestStatusTrackerRecordsChanges(t *testing.T) {
 	e := newTestServer(t)
 	started := e.now

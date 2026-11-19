@@ -72,6 +72,12 @@ events:
     code: READER
     number: 4
     severity: MEDIUM
+  # reader works again after READER_*; context.down_s
+  READER_RECOVERED:
+    category: READER
+    code: READER
+    number: 5
+    severity: INFO
 
   PRINTER_DISCONNECTED:
     category: PRINTER
@@ -94,12 +100,24 @@ events:
     code: LPR
     number: 2
     severity: LOW
+  # camera feed back after LPR_*; context.down_s
+  LPR_RECOVERED:
+    category: LPR
+    code: LPR
+    number: 3
+    severity: INFO
 
   CCTV_DISCONNECTED:
     category: CCTV
     code: CCTV
     number: 1
     severity: MEDIUM
+  # CCTV back after CCTV_DISCONNECTED; context.down_s
+  CCTV_RECOVERED:
+    category: CCTV
+    code: CCTV
+    number: 2
+    severity: INFO
 
   MQTT_DISCONNECTED:
     category: MQTT
@@ -116,6 +134,20 @@ events:
     code: MQTT
     number: 3
     severity: INFO
+  # broker connected again after MQTT_DISCONNECTED/MQTT_CONNECT_FAILED; context.down_s
+  MQTT_RECOVERED:
+    category: MQTT
+    code: MQTT
+    number: 4
+    severity: INFO
+  # Broker connected, but the hardware gateway/board behind it has published
+  # nothing for longer than the kiosk's threshold (context.silent_s,
+  # context.threshold_s). The gate looks connected yet cannot act.
+  GATEWAY_SILENT:
+    category: MQTT
+    code: MQTT
+    number: 5
+    severity: HIGH
 
   NETWORK_DISCONNECTED:
     category: NETWORK
@@ -143,6 +175,12 @@ events:
     code: API
     number: 3
     severity: MEDIUM
+  # payment server reachable again after HTTP_*/NETWORK_*; context.down_s
+  SERVER_RECOVERED:
+    category: API
+    code: API
+    number: 4
+    severity: INFO
 
   DATABASE_ERROR:
     category: DATABASE
@@ -165,12 +203,24 @@ events:
     code: DEVICE
     number: 3
     severity: HIGH
+  # PCLess/TCP controller reachable again; context.down_s
+  PCLESS_RECOVERED:
+    category: DEVICE
+    code: DEVICE
+    number: 4
+    severity: INFO
 
   SYSTEM_ERROR:
     category: SYSTEM
     code: SYS
     number: 1
     severity: MEDIUM
+  # kiosk clock differs from the agent's by > 5 min; context.skew_s
+  CLOCK_SKEW:
+    category: SYSTEM
+    code: SYS
+    number: 2
+    severity: LOW
 
   # --- Reserved range: numbers >= 900 are for events the Sentinel SDK
   # itself emits. Auto-allocation never counts them, so adding one here

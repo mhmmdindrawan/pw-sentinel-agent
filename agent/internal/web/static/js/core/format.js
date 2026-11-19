@@ -46,6 +46,7 @@ export function fmtDuration(sec) {
 export const STATUS_TEXT = { ONLINE: "Online", STALE: "Terlambat", DOWN: "Mati", NEVER: "Belum pernah lapor" };
 export const COLOR_TEXT = { red: "Bermasalah", yellow: "Perhatian", green: "Normal" };
 export const PLATFORM_TEXT = { tongbao: "Tongbao", windows: "Windows", linux: "Linux" };
+export const TRANSPORT_TEXT = { mqtt: "MQTT", tcp: "TCP" };
 
 // statusLabel is what a gate's badge says: liveness when it isn't simply
 // online, otherwise the health colour.
@@ -82,6 +83,17 @@ export function platformLabel(p) {
   return p ? PLATFORM_TEXT[p] || p : "";
 }
 
+// transportLabel: how the kiosk reaches its gate hardware, "MQTT"/"TCP".
+export function transportLabel(t) {
+  return t ? TRANSPORT_TEXT[t] || t.toUpperCase() : "";
+}
+
+// platformTransport: "Tongbao · MQTT" on the gate card, "Tongbao" when the
+// kiosk doesn't report a transport, "" when neither is known.
+export function platformTransport(d) {
+  return [platformLabel(d.platform), transportLabel(d.transport)].filter(Boolean).join(" · ");
+}
+
 // Human names for the registry's event names. The table leads with these;
 // the symbolic name stays visible in small print for developers and for
 // matching against the kiosk's source.
@@ -91,14 +103,19 @@ export const EVENT_LABEL = {
   QRIS_NOT_CONFIGURED: "QRIS belum dikonfigurasi",
   READER_DISCONNECTED: "Pembaca kartu terputus", CARD_READ_TIMEOUT: "Baca kartu timeout",
   READER_NOT_READY: "Pembaca kartu tidak siap", READER_INIT_FAILED: "Pembaca kartu gagal inisialisasi",
+  READER_RECOVERED: "Pembaca kartu pulih",
   PRINTER_DISCONNECTED: "Printer terputus", PRINT_FAILED: "Cetak gagal",
   LPR_TIMEOUT: "Kamera LPR timeout", LPR_NO_FEED: "Kamera LPR tidak mengirim gambar", CCTV_DISCONNECTED: "CCTV terputus",
+  LPR_RECOVERED: "Kamera LPR pulih", CCTV_RECOVERED: "CCTV tersambung lagi",
   MQTT_DISCONNECTED: "MQTT terputus", MQTT_CONNECT_FAILED: "MQTT gagal terhubung", MQTT_DISABLED: "MQTT dimatikan",
+  MQTT_RECOVERED: "MQTT tersambung lagi", GATEWAY_SILENT: "Gateway hardware tidak mengirim data",
   NETWORK_DISCONNECTED: "Jaringan terputus", HIGH_LATENCY: "Jaringan lambat",
   HTTP_SERVER_ERROR: "Server pembayaran error", HTTP_TIMEOUT: "Server pembayaran timeout", HTTP_CLIENT_ERROR: "Permintaan ke server ditolak",
+  SERVER_RECOVERED: "Server pembayaran pulih",
   DATABASE_ERROR: "Database error", DEVICE_ERROR: "Perangkat error",
   GATE_OPEN_FAILED: "Palang tidak terbuka", PCLESS_DISCONNECTED: "Palang (PCLess) terputus",
-  SYSTEM_ERROR: "Sistem error", SENTINEL_GAP: "Kiosk sempat tidak terhubung ke Sentinel",
+  PCLESS_RECOVERED: "Palang (PCLess) tersambung lagi",
+  SYSTEM_ERROR: "Sistem error", CLOCK_SKEW: "Jam kiosk tidak sesuai", SENTINEL_GAP: "Kiosk sempat tidak terhubung ke Sentinel",
   GATE_DOWN: "Gate mati (tidak ada kabar)",
 };
 

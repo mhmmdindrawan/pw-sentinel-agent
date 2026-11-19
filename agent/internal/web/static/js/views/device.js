@@ -5,7 +5,7 @@
 import { h, setText } from "../core/dom.js";
 import { api, ApiError } from "../core/api.js";
 import { Poller } from "../core/poller.js";
-import { nf, fmtTime, fmtDuration, fmtSinceDuration, STATUS_TEXT, statusLabel, platformLabel, eventLabel, shortCode, incidentCodes } from "../core/format.js";
+import { nf, fmtTime, fmtDuration, fmtSinceDuration, STATUS_TEXT, statusLabel, platformLabel, transportLabel, eventLabel, shortCode, incidentCodes } from "../core/format.js";
 import { agoEl, setAgo, sinceEl, setSince } from "../core/ticker.js";
 import { statusBadge, sevBadge } from "../ui/badges.js";
 import { tile } from "../ui/tile.js";
@@ -53,6 +53,7 @@ export function mount(root, params, ctx) {
       infoItem("hb", "Heartbeat terakhir"),
       infoItem("ev", "Event terakhir"),
       infoItem("platform", "Platform"),
+      infoItem("transport", "Koneksi hardware"),
       infoItem("app", "Versi aplikasi"),
       infoItem("sdk", "Versi SDK"),
       infoItem("addr", "Alamat"),
@@ -104,6 +105,7 @@ export function mount(root, params, ctx) {
     set("hb", fmtTime(d.last_heartbeat_at));
     set("ev", fmtTime(d.last_event_at));
     set("platform", platformLabel(d.platform) || "—");
+    set("transport", transportLabel(d.transport) || "—");
     set("app", d.app_version || "—");
     set("sdk", d.sdk_version || "—");
     set("addr", d.remote_addr || "—");

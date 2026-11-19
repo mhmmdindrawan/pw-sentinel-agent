@@ -416,6 +416,15 @@ class ExceptionTest(Base):
         _wait(lambda: "/v1/heartbeat" in a.paths())
         hb = [r[1] for r in a.requests if r[0] == "/v1/heartbeat"][0]
         self.assertEqual(hb["platform"], "tongbao")
+        self.assertNotIn("transport", hb)  # not sent unless the kiosk says
+
+    def test_heartbeat_carries_transport(self):
+        a = self.agent()
+        c = self.client(a.url, heartbeat_interval=0.1, platform="tongbao", transport="mqtt")
+        c.beat()
+        _wait(lambda: "/v1/heartbeat" in a.paths())
+        hb = [r[1] for r in a.requests if r[0] == "/v1/heartbeat"][0]
+        self.assertEqual((hb["platform"], hb["transport"]), ("tongbao", "mqtt"))
 
 
 class EnrollTest(Base):
