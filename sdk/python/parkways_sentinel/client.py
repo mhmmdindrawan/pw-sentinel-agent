@@ -203,7 +203,7 @@ class SentinelClient:
 
         `transport` is how the kiosk reaches its gate hardware, "mqtt" or
         "tcp" on Tongbao. It rides on every heartbeat and shows on the gate
-        card next to the platform ("Tongbao · MQTT"); agents before v0.6.1
+        card next to the platform ("Tongbao · MQTT"); agents before v1.0.0
         ignore it."""
         self._device_id = device_id
         self._platform = platform or _default_platform()

@@ -201,7 +201,7 @@ retry atau setiap siklus. Buat helper kecil `Transition(name)` dengan
   terluar controller → `get_client().exception()`. Jangan kirim
   traceback yang sama dua kali (lewat handler catch-all juga).
 Semua nama event di prompt ini sudah terdaftar di registry.yaml (agent
-v0.6.1+), jadi kodenya sama di semua lokasi. Pakai konstanta dari
+v1.0.0+), jadi kodenya sama di semua lokasi. Pakai konstanta dari
 `parkways_sentinel.events`. Kalau ada kondisi penting lain tanpa nama di
 registry.yaml, daftarkan sebagai usulan di laporan akhir dan kirim dengan
 `category` yang tepat. Jangan mengarang kode error sendiri: kode dibuat
@@ -274,7 +274,7 @@ diubah oleh integrasi ini; kalau controller tidak punya ack, catat di
 laporan sebagai usulan untuk vendor controller.
 
 Kirim juga `transport` ("mqtt"/"tcp") di heartbeat: SDK 0.4.0
-`SentinelClient(..., transport=TRANSPORT)`. Agent v0.6.1 menampilkannya di
+`SentinelClient(..., transport=TRANSPORT)`. Agent v1.0.0 menampilkannya di
 kartu gate ("Tongbao · MQTT"); agent lama mengabaikannya tanpa error.
 
 ## 6b. Stabilitas log di Lubuntu ARM

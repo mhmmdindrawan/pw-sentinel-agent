@@ -1,5 +1,6 @@
 import { h } from "../core/dom.js";
 import { api, ApiError, AuthError } from "../core/api.js";
+import { typeLoop } from "../core/typing.js";
 
 // mount renders the login form; onSuccess is called once logged in.
 export function mount(root, { message, onSuccess }) {
@@ -36,9 +37,31 @@ export function mount(root, { message, onSuccess }) {
   h("label", { for: "login-pass" }, "Password"), pass,
   submit);
 
+  // The version is the running agent's own (set at build time, e.g.
+  // deploy/build.sh v1.0.0), read from the public health endpoint so the
+  // form never shows a number that differs from what is installed.
+  const version = h("span", { class: "login-version", hidden: true });
+  const ctrl = new AbortController();
+  fetch("/v1/health", { signal: ctrl.signal })
+    .then((res) => (res.ok ? res.json() : {}))
+    .then((d) => {
+      const v = String(d.version || "").replace(/^v(?=\d)/i, "");
+      if (v) {
+        version.textContent = "Versi " + v;
+        version.hidden = false;
+      }
+    })
+    .catch(() => {});
+
   root.replaceChildren(h("div", { class: "login panel" },
-    h("h1", { text: "Parkways Sentinel" }),
-    h("p", { class: "muted", text: "Masuk untuk memantau status gate." }), msg, form));
+    h("h1", { class: "brand brand-lg" },
+      h("span", { class: "brand-name", text: "parkways" }), " ",
+      h("span", { class: "brand-sub", text: "Sentinel Gateout Cashless" })),
+    h("p", { class: "muted", text: "Masuk untuk memantau status gate." }), msg, form,
+    h("footer", { class: "login-foot" },
+      version,
+      h("span", { text: "© 2026 Parkways Dashboard. All rights reserved." }))));
+  const stopTyping = typeLoop(root.querySelector(".brand-sub"));
   user.focus();
-  return { destroy() {} };
+  return { destroy() { ctrl.abort(); stopTyping(); } };
 }

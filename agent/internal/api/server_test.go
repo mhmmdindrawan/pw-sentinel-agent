@@ -439,12 +439,12 @@ func TestRetentionPurge(t *testing.T) {
 
 func TestFavicon(t *testing.T) {
 	e := newTestServer(t)
-	if rec := e.do(http.MethodGet, "/favicon.ico", "", nil); rec.Code != http.StatusMovedPermanently || rec.Header().Get("Location") != "/static/favicon.svg" {
+	if rec := e.do(http.MethodGet, "/favicon.ico", "", nil); rec.Code != http.StatusMovedPermanently || rec.Header().Get("Location") != "/static/logo.png" {
 		t.Fatalf("/favicon.ico: %d → %q", rec.Code, rec.Header().Get("Location"))
 	}
-	rec := e.do(http.MethodGet, "/static/favicon.svg", "", nil)
-	if rec.Code != http.StatusOK || !strings.HasPrefix(rec.Header().Get("Content-Type"), "image/svg+xml") {
-		t.Fatalf("/static/favicon.svg: %d %q", rec.Code, rec.Header().Get("Content-Type"))
+	rec := e.do(http.MethodGet, "/static/logo.png", "", nil)
+	if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "image/png" {
+		t.Fatalf("/static/logo.png: %d %q", rec.Code, rec.Header().Get("Content-Type"))
 	}
 }
 

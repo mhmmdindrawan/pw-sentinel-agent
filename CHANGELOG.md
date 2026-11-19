@@ -5,9 +5,22 @@ harus dilakukan operator saat upgrade (restart, ubah config, migrasi).
 Release notes di GitHub diambil otomatis dari bagian tag yang bersangkutan
 (`.github/workflows/release.yml`).
 
-## [v0.6.1] - belum dirilis
+## [v1.0.0] - belum dirilis
 
-Usulan dari integrasi kiosk Tongbao (MQTT dan TCP).
+Tampilan baru mengikuti identitas Parkways, plus usulan dari integrasi kiosk
+Tongbao (MQTT dan TCP). Nomor versi 1.0.0 menandai versi rilis
+resmi pertama untuk lokasi.
+
+### Tampilan
+- Logo dan warna Parkways: logo "P" oranye dengan tulisan **parkways** navy
+  di header dan form login (seperti dashboard offstreet.parkways.id). Di
+  bawahnya nama produk **Sentinel Gateout Cashless** tampil seperti sedang
+  diketik (diam bila sistem meminta animasi dikurangi). Tombol utama biru solid, latar terang dengan kartu
+  putih; mode gelap ikut bernuansa navy. Ikon tab browser memakai logo yang
+  sama (`static/logo.png`, `favicon.svg` dihapus).
+- Form login menampilkan **Versi** agent yang sedang berjalan (dari
+  `/v1/health`, jadi selalu sama dengan program yang terpasang) dan
+  "© 2026 Parkways Dashboard. All rights reserved."
 
 ### Agent
 - Event baru di `registry.yaml`, sehingga kodenya sama di semua lokasi
@@ -50,6 +63,8 @@ Usulan dari integrasi kiosk Tongbao (MQTT dan TCP).
   Windows (folder bawaan `D:\ParkwaysSentinel`, task terjadwal SYSTEM).
 
 ### Perlu tindakan
+- Build dengan nomor versinya: `deploy/build.sh v1.0.0`. Nomor ini yang
+  tampil di form login (build tanpa nomor menampilkan kode commit).
 - Ganti `registry.yaml` bersama binary (setup-lokasi melakukannya
   otomatis, yang lama disimpan sebagai `registry.yaml.bak`).
 - Lokasi yang sudah pernah menerima event-event di atas sebelum upgrade:

@@ -17,11 +17,14 @@ const LIVE = [
   ["STI-G01-POS01", 0], ["STI-G02-POS01", 0], ["STI-G03-POS01", 37], ["STI-G06-POS01", 0], ["LBI-G01-POS01", 0],
 ];
 
+// Build version, shown on the login form without the "v".
+const VERSION = "v1.2.3";
+
 function build() {
   fs.rmSync(RUN, { recursive: true, force: true });
   fs.mkdirSync(RUN, { recursive: true });
   const agentDir = path.join(ROOT, "agent");
-  execFileSync("go", ["build", "-o", BIN, "./cmd/sentinel-agent"], { cwd: agentDir, stdio: "inherit" });
+  execFileSync("go", ["build", "-ldflags", `-X main.version=${VERSION}`, "-o", BIN, "./cmd/sentinel-agent"], { cwd: agentDir, stdio: "inherit" });
   execFileSync("go", ["run", "./cmd/sentinel-demo", "-dir", DEMO, "-registry", "registry.yaml", "-listen", `127.0.0.1:${PORT}`],
     { cwd: agentDir, stdio: "inherit" });
 }
@@ -74,4 +77,4 @@ async function postEvent(deviceId, event, extra = {}) {
   return r.json();
 }
 
-module.exports = { build, start, stop, heartbeat, postEvent, BASE, USER: "demo", PASSWORD: "demo-password-1" };
+module.exports = { build, start, stop, heartbeat, postEvent, BASE, VERSION, USER: "demo", PASSWORD: "demo-password-1" };

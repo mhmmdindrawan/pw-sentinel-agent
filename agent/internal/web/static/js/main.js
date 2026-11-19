@@ -8,6 +8,7 @@ import { h } from "./core/dom.js";
 import { api, AuthError } from "./core/api.js";
 import { connection } from "./core/connection.js";
 import { mountBanner } from "./ui/banner.js";
+import { typeLoop } from "./core/typing.js";
 import * as login from "./views/login.js";
 import * as fleet from "./views/fleet.js";
 import * as device from "./views/device.js";
@@ -15,6 +16,7 @@ import * as events from "./views/events.js";
 
 const main = document.getElementById("app");
 const topbar = document.getElementById("topbar");
+typeLoop(topbar.querySelector(".brand-sub"));
 const whoName = document.getElementById("who-name");
 const banner = mountBanner(document.getElementById("conn"));
 

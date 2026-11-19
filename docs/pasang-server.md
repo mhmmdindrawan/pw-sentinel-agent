@@ -26,7 +26,7 @@ Ada 5 tahap:
 **1.1** Buat programnya:
 
 ```bash
-deploy/build.sh v0.6.0
+deploy/build.sh v1.0.0
 ```
 
 **1.2** Kumpulkan file sesuai jenis PC server:
@@ -35,7 +35,7 @@ deploy/build.sh v0.6.0
 
 ```bash
 mkdir -p ~/kirim/sentinel
-cp dist/sentinel-agent-v0.6.0-linux-amd64 deploy/setup-lokasi.sh \
+cp dist/sentinel-agent-v1.0.0-linux-amd64 deploy/setup-lokasi.sh \
    agent/registry.yaml agent/config.example.yaml ~/kirim/sentinel/
 ```
 
@@ -47,7 +47,7 @@ cp dist/sentinel-agent-v0.6.0-linux-amd64 deploy/setup-lokasi.sh \
 
 ```bash
 mkdir -p ~/kirim/ParkwaysSentinel-setup
-cp dist/sentinel-agent-v0.6.0-windows-amd64.exe deploy/setup-lokasi.bat \
+cp dist/sentinel-agent-v1.0.0-windows-amd64.exe deploy/setup-lokasi.bat \
    deploy/setup-lokasi.ps1 agent/registry.yaml agent/config.example.yaml \
    ~/kirim/ParkwaysSentinel-setup/
 ```

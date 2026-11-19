@@ -1,24 +1,30 @@
-/* Parkways Sentinel dashboard — Nocturne theme.
-   Light palette on :root, dark redefines the same tokens via
-   prefers-color-scheme. Layout: a sticky top bar (brand, nav, user) above
-   the content; on phones it wraps into two rows.
+/* Parkways Sentinel dashboard — Parkways theme.
+   Colours follow the Parkways web dashboards (offstreet.parkways.id): the
+   orange "P" mark, the navy "parkways" wordmark, a blue primary action on a
+   near-white page with white cards. Light palette on :root, dark redefines
+   the same tokens via prefers-color-scheme. Layout: a sticky top bar (brand,
+   nav, user) above the content; on phones it wraps into two rows.
    Status colours are the fixed good/warning/critical steps and always ship
-   with an icon + label. */
+   with an icon + label. Text colours keep at least 4.5:1 on their surface. */
 :root {
   color-scheme: light;
-  --bg: #f2f3f8;
-  --surface: #fcfcfe;
-  --surface-2: #eceef5;
-  --topbar-bg: #fcfcfe;
-  --border: #dcdfea;
-  --border-strong: #c4c8d8;
-  --text: #1b1d2a;
-  --text-2: #3f424d;
-  --text-3: #595d6c;
-  --accent: #5d5294;        /* links, focus, active nav — 7:1 on --surface */
-  --accent-line: #796cbf;   /* marks, outlines, glows */
-  --accent-tint: #ece9fb;   /* active nav fill */
-  --series: #796cbf;
+  --bg: #fafafb;
+  --surface: #ffffff;
+  --surface-2: #f0f3f8;
+  --topbar-bg: #ffffff;
+  --border: #e6ebf1;
+  --border-strong: #d0d7e2;
+  --text: #262626;
+  --text-2: #484848;
+  --text-3: #6b6b6b;
+  --brand-orange: #f1aa52;  /* the "P" mark */
+  --brand-ink: #1e458c;     /* the "parkways" wordmark, 9:1 on white */
+  --primary: #1668dc;       /* solid buttons; white text 5.2:1 */
+  --primary-hover: #1554ad;
+  --accent: #1668dc;        /* links, focus, active nav — 5.2:1 on --surface */
+  --accent-line: #1890ff;   /* marks, outlines, glows (Parkways blue) */
+  --accent-tint: #e6f4ff;   /* active nav fill */
+  --series: #1890ff;
   --good: #0ca30c;
   --warning: #e09e0f;
   --critical: #d03b3b;
@@ -28,29 +34,33 @@
   --good-bg: #e4f3e6;
   --warning-bg: #fbf1d9;
   --critical-bg: #fae6e6;
-  --shadow: 0 0 0 1px var(--border), 0 1px 2px rgba(20, 22, 40, .04);
-  --shadow-hover: 0 0 0 1px var(--border-strong), 0 6px 18px rgba(20, 22, 40, .08);
-  --radius: 12px;
-  --radius-sm: 8px;
-  --font: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --shadow: 0 0 0 1px var(--border), 0 2px 8px rgba(0, 0, 0, .06);
+  --shadow-hover: 0 0 0 1px var(--border-strong), 0 6px 18px rgba(30, 69, 140, .10);
+  --radius: 8px;
+  --radius-sm: 6px;
+  --font: "Public Sans", Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 @media (prefers-color-scheme: dark) {
   :root {
     color-scheme: dark;
-    --bg: #161826;
-    --surface: #1f2130;
-    --surface-2: #2a2d3c;
-    --topbar-bg: #121320;
-    --border: #33364a;
-    --border-strong: #4a4e63;
-    --text: #e9e9ed;
-    --text-2: #b2b6ca;
-    --text-3: #9397ab;
-    --accent: #b5abfc;      /* 7.9:1 on --surface, 6.4:1 on --surface-2 */
-    --accent-line: #9184d9;
-    --accent-tint: #2b2741;
-    --series: #9184d9;
+    --bg: #0f1726;
+    --surface: #172235;
+    --surface-2: #1f2c42;
+    --topbar-bg: #0c1422;
+    --border: #2a3a55;
+    --border-strong: #3d5070;
+    --text: #e8edf5;
+    --text-2: #b0bccf;
+    --text-3: #8f9db3;
+    --brand-orange: #f1aa52;
+    --brand-ink: #dbe6f7;
+    --primary: #1668dc;
+    --primary-hover: #1f7af0;
+    --accent: #69b1ff;      /* 7.1:1 on --surface, 6.2:1 on --surface-2 */
+    --accent-line: #4096ff;
+    --accent-tint: #15325b;
+    --series: #4096ff;
     --good: #2fb344;
     --warning: #fab219;
     --critical: #e5534b;
@@ -89,17 +99,43 @@ button, select, input { font: inherit; color: inherit; }
   background: var(--topbar-bg);
   box-shadow: 0 1px 0 var(--border);
 }
+/* Brand lockup like the Parkways dashboards: orange "P" mark, then the
+   navy "parkways" wordmark with the product name underneath. */
 .brand {
-  display: inline-flex; align-items: center; gap: 10px;
-  font-weight: 600; font-size: 14.5px; letter-spacing: .005em; color: var(--text);
+  display: inline-grid; grid-template-columns: auto auto; column-gap: 8px;
+  align-items: center; line-height: 1.05; color: var(--brand-ink);
 }
 .brand:hover { text-decoration: none; }
 .brand::before {
-  content: ""; flex: none; width: 24px; height: 24px; border-radius: 7px;
-  border: 1px solid var(--accent-line);
-  background: radial-gradient(circle, var(--accent-line) 0 3px, transparent 3.5px);
-  box-shadow: 0 0 14px color-mix(in srgb, var(--accent-line) 35%, transparent);
+  content: ""; grid-row: 1 / 3; width: 30px; height: 30px;
+  background: url("logo.png") center / contain no-repeat;
 }
+.brand-name { align-self: end; font-size: 19px; font-weight: 700; letter-spacing: -.01em; }
+.brand-sub { align-self: start; font-size: 11px; font-weight: 700; letter-spacing: .02em; }
+/* The product name is "typed" under the wordmark (js/core/typing.js):
+   letters fade in one by one behind a caret. An invisible full copy
+   (.ghost) sizes the box to the whole name in the installed font, so it is
+   never clipped and the header never shifts while it types. */
+.brand-sub { position: relative; white-space: pre; }
+.brand-sub .ghost { visibility: hidden; padding-right: 4px; }
+.brand-sub .typing { position: absolute; left: 0; top: 0; }
+.brand-sub .ch { animation: type-in .22s ease-out both; }
+@keyframes type-in { from { opacity: 0; filter: blur(2px); } to { opacity: 1; filter: none; } }
+.brand-sub .caret {
+  display: inline-block; width: 1.5px; height: 1.05em; margin-left: 1px;
+  vertical-align: -.15em; background: var(--brand-orange);
+  animation: caret-blink 1s steps(1) infinite;
+}
+.brand-sub .caret.busy { animation: none; }
+@keyframes caret-blink { 50% { opacity: 0; } }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+.brand-lg { column-gap: 10px; }
+.brand-lg::before { width: 42px; height: 42px; }
+.brand-lg .brand-name { font-size: 26px; }
+.brand-lg .brand-sub { font-size: 12.5px; }
 .topbar nav { display: flex; gap: 2px; }
 .topbar nav a {
   display: flex; align-items: center; gap: 10px;
@@ -168,9 +204,10 @@ h2 { font-size: 15px; font-weight: 600; margin: 22px 0 10px; }
 }
 .btn:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
 .btn:active { background: color-mix(in srgb, var(--text) 12%, transparent); }
-.btn.primary { color: var(--accent); border-color: var(--accent-line); }
-.btn.primary:hover { background: color-mix(in srgb, var(--accent-line) 12%, transparent); }
-.btn.primary:active { background: color-mix(in srgb, var(--accent-line) 22%, transparent); }
+.btn.primary { color: #fff; background: var(--primary); border-color: var(--primary); font-weight: 600; }
+.btn.primary:hover { background: var(--primary-hover); border-color: var(--primary-hover); }
+.btn.primary:active { background: var(--primary-hover); }
+.btn.primary:disabled { opacity: .7; }
 .notice {
   border-radius: var(--radius-sm); padding: 10px 14px; margin-bottom: 16px;
   background: var(--warning-bg); color: var(--text);
@@ -324,17 +361,13 @@ details.small[open] summary { margin-bottom: 8px; }
 
 /* ── Login ─────────────────────────────────────────────────────── */
 .login { max-width: 380px; margin: 14vh auto 0; padding: 28px 28px 26px; }
-.login h1 { display: flex; align-items: center; gap: 10px; font-size: 20px; }
-.login h1::before {
-  content: ""; flex: none; width: 26px; height: 26px; border-radius: 7px;
-  border: 1px solid var(--accent-line);
-  background: radial-gradient(circle, var(--accent-line) 0 3px, transparent 3.5px);
-  box-shadow: 0 0 14px color-mix(in srgb, var(--accent-line) 35%, transparent);
-}
+.login h1 { margin: 0 0 16px; }
 .login > p { margin: 4px 0 20px; }
 .login form { display: grid; gap: 12px; }
 .login form label { font-size: 12.5px; font-weight: 500; color: var(--text-2); margin-bottom: -6px; }
 .login .btn { margin-top: 6px; min-height: 40px; }
+.login-foot { margin: 22px 0 0; padding-top: 14px; border-top: 1px solid var(--border); text-align: center; font-size: 12px; line-height: 1.6; color: var(--text-3); }
+.login-foot span { display: block; }
 
 @media (max-width: 560px) {
   .topbar { gap: 10px; }
@@ -349,7 +382,7 @@ details.small[open] summary { margin-bottom: 8px; }
 
 /* ── Accessibility ─────────────────────────────────────────────── */
 .skip-link {
-  position: absolute; left: 12px; top: -48px; z-index: 50;
+  position: absolute; left: 12px; top: -80px; z-index: 50;
   background: var(--surface); color: var(--accent); padding: 8px 12px; border-radius: var(--radius-sm);
   box-shadow: var(--shadow-hover);
 }

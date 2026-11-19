@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>Parkways Sentinel — preview</title>
-<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="icon" href="logo.png" type="image/png">
 <style id="theme-css"></style>
 <script>
 // Preview harness only: stubs the agent API with demo data and lets you
@@ -64,6 +64,7 @@
     const u = new URL(path, location.origin), p = u.pathname, q = u.searchParams;
     if (p === "/v1/auth/login") { const b = JSON.parse(opts.body || "{}"); if (b.password && b.password.length >= 4) { authed = true; return json({ username: b.username }); } return json({ error: "bad" }, 401); }
     if (p === "/v1/auth/logout") { authed = false; return json({}); }
+    if (p === "/v1/health") return json({ status: "ok", version: "v1.0.0" });
     if (!authed) return json({ error: "login required" }, 401);
     if (p === "/v1/auth/me") return json({ username: "noc" });
     if (p === "/v1/fleet") return json({ devices, unmapped_24h: 7 });
@@ -100,7 +101,7 @@
 <body>
 <a class="skip-link" href="#" id="skip">Lewati ke konten utama</a>
 <header class="topbar" id="topbar" hidden>
-  <a class="brand" href="#/">Parkways Sentinel</a>
+  <a class="brand" href="#/"><span class="brand-name">parkways</span> <span class="brand-sub">Sentinel Gateout Cashless</span></a>
   <nav aria-label="Navigasi utama">
     <a href="#/" data-nav="fleet">Ringkasan</a>
     <a href="#/events" data-nav="events">Event</a>
