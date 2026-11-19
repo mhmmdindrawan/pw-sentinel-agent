@@ -42,9 +42,10 @@ cd /opt/parkways-sentinel && sudo mv config.example.yaml config.yaml
 sudo chown -R sentinel:sentinel /opt/parkways-sentinel
 ```
 
-Windows: taruh `sentinel-agent-*-windows-amd64.exe`, `registry.yaml`, dan
-`config.yaml` di `C:\ParkwaysSentinel\`, lalu daftarkan sebagai service
-(NSSM atau `sc create`) dengan working directory folder itu.
+Windows: pakai `deploy/setup-lokasi.bat` (lihat [pasang-server.md](pasang-server.md)).
+Jangan memakai `sc create`: agent belum mendukung mode service Windows, jadi
+Windows mematikannya ±30 detik setelah start. Setup memasang task terjadwal
+`ParkwaysSentinel` (akun SYSTEM) yang menjalankan dan mengawasi agent.
 
 ## 3. `config.yaml` per lokasi
 

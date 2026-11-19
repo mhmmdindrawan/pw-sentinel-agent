@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Build release binaries for every target the agent runs on.
 # Usage: deploy/build.sh [version]   (default: git describe)
+# Output in dist/: binaries + SHA256SUMS-<version>. Install on a site server: docs/pasang-server.md.
 set -euo pipefail
 cd "$(dirname "$0")/../agent"
 VERSION="${1:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}"
@@ -16,3 +17,7 @@ build() {
 build linux   amd64 linux-amd64
 build linux   arm   linux-armv7 GOARM=7
 build windows amd64 windows-amd64.exe
+
+(cd "$OUT" && sha256sum "sentinel-agent-$VERSION-linux-amd64" "sentinel-agent-$VERSION-linux-armv7" \
+  "sentinel-agent-$VERSION-windows-amd64.exe" > "SHA256SUMS-$VERSION")
+echo "checksums $OUT/SHA256SUMS-$VERSION"

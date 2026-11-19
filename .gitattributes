@@ -1,0 +1,2 @@
+# Skrip Windows harus CRLF supaya label goto di cmd.exe bekerja.
+*.bat text eol=crlf

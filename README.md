@@ -27,8 +27,8 @@ What's in this repo:
   or crashes the host app; it keeps events in an outbox until the agent
   confirms them, backs off while the agent is unreachable, and coalesces
   repeats of the same problem.
-- **`deploy/`** — systemd unit and a multi-target build script.
-- **`docs/`** — [panduan singkat (ID)](docs/panduan-singkat.md), [wire protocol](docs/protocol-v1.md),
+- **`deploy/`** — multi-target build script and one-step site setup: `setup-lokasi.sh` (Linux, `~/sentinel`) and `setup-lokasi.bat`/`.ps1` (Windows, `D:\ParkwaysSentinel`).
+- **`docs/`** — [pasang di server lokasi (ID)](docs/pasang-server.md), [panduan singkat (ID)](docs/panduan-singkat.md), [wire protocol](docs/protocol-v1.md),
   [per-site server runbook](docs/deploy-server-lokasi.md) (one agent per location, kiosks self-enroll),
   [VPS deployment runbook](docs/deploy-vps.md) (central agent, static `devices.yaml`),
   [kiosk integration guide](docs/integrasi-kiosk.md),

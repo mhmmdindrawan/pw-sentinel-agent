@@ -11,6 +11,14 @@ Contoh di bawah memakai PC uji: folder `~/sentinel-local`, IP Tailscale
 
 ---
 
+## Cara cepat (disarankan)
+
+Ikuti [`pasang-server.md`](pasang-server.md). Server Linux: salin binary,
+`setup-lokasi.sh`, `registry.yaml`, dan `config.example.yaml` ke
+`~/sentinel`, jalankan `bash setup-lokasi.sh` (tanpa sudo), lalu ketik nama
+lokasi. Server Windows: klik dua kali `setup-lokasi.bat` (terpasang di
+`D:\ParkwaysSentinel`). Bagian A di bawah adalah cara manual untuk Linux.
+
 ## A. Pasang Sentinel di server (sekali per lokasi)
 
 **1. Masuk ke folder Sentinel.** Isinya cukup tiga file:
