@@ -21,8 +21,14 @@ resmi pertama untuk lokasi.
 - Form login menampilkan **Versi** agent yang sedang berjalan (dari
   `/v1/health`, jadi selalu sama dengan program yang terpasang) dan
   "© 2026 Parkways Dashboard. All rights reserved."
+- Dashboard menyebut perangkat gate sebagai **Cashless**, bukan "kiosk"
+  (misalnya "Antrean di Cashless", "Terjadi di Cashless").
 
 ### Agent
+- Perbaikan: gate yang tidak mengirim heartbeat dan terus mengulang event
+  yang sama tidak lagi tampil Terlambat lalu Mati setiap jam. Event ulangan
+  yang tidak disimpan (lewat batas `squelch_per_hour`) kini tetap dihitung
+  sebagai tanda kiosk hidup.
 - Event baru di `registry.yaml`, sehingga kodenya sama di semua lokasi
   (sebelumnya event ini diberi nomor sendiri oleh tiap agent):
 

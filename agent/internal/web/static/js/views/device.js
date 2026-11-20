@@ -23,7 +23,7 @@ export function mount(root, params, ctx) {
 
   const tErr1 = tile("Error 1 jam");
   const tErr24 = tile("Error 24 jam");
-  const tOutbox = tile("Antrean di kiosk", { sub: "event belum terkirim" });
+  const tOutbox = tile("Antrean di Cashless", { sub: "event belum terkirim" });
   const tUptime = tile("Uptime aplikasi");
 
   const info = {};
@@ -142,7 +142,7 @@ export function mount(root, params, ctx) {
       `${eventLabel(top.event)} (${top.event}) ${nf.format(top.count)}× dalam 24 jam — ${Math.round(100 * top.count / total)} % dari semua event gate ini. `,
       top.event.startsWith("LOG_")
         ? "Ini log aplikasi yang diteruskan apa adanya; minta developer mengubahnya menjadi satu event terstruktur per transisi (lihat docs/prompt-integrasi-gateout.md)."
-        : "Periksa apakah kiosk mengirim ulang kondisi yang sama setiap siklus.");
+        : "Periksa apakah Cashless mengirim ulang kondisi yang sama setiap siklus.");
   }
 
   const poller = new Poller(async (signal) => {

@@ -318,6 +318,12 @@ func (s *Server) ingestOne(deviceEntry devices.Entry, in model.IncomingEvent) in
 			s.storeSquelchSummary(*sum)
 		}
 		if held {
+			// A held event still proves the kiosk is alive: without this a
+			// kiosk that sends no heartbeat and repeats one event goes
+			// STALE then DOWN every hour once the cap is reached.
+			if err := s.db.TouchEventSeen(deviceEntry.DeviceID, receivedAt, appVersion); err != nil {
+				log.Printf("warning: %v", err)
+			}
 			// Acknowledge so the SDK drops it from its outbox; the hour's
 			// summary will carry the count.
 			return ingestResult{Event: model.StoredEvent{DeviceID: in.DeviceID, EventID: eventID, Event: in.Event,

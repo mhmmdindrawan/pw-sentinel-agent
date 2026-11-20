@@ -183,8 +183,8 @@ function eventRows(e, showDevice, cols) {
 // Field labels for the detail panel, in display order. Anything else the
 // agent returns (context, stack) gets its own block below the list.
 const FIELDS = [
-  ["message", "Pesan"], ["occurred_at", "Terjadi di kiosk", fmtTime], ["received_at", "Diterima agent", fmtTime],
-  ["device_id", "Device ID kiosk"], ["device", "Komponen"], ["app_version", "Versi aplikasi"],
+  ["message", "Pesan"], ["occurred_at", "Terjadi di Cashless", fmtTime], ["received_at", "Diterima agent", fmtTime],
+  ["device_id", "Device ID Cashless"], ["device", "Komponen"], ["app_version", "Versi aplikasi"],
   ["endpoint", "Endpoint"], ["http_status", "HTTP status"], ["duration_ms", "Durasi", (v) => v + " ms"],
   ["retry_count", "Percobaan ulang"], ["transaction_ref", "Ref. transaksi"], ["event_id", "Event ID"],
 ];

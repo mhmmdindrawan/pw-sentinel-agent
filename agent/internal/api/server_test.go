@@ -891,3 +891,32 @@ func TestIncidentsGroupTrouble(t *testing.T) {
 		t.Fatalf("second incident not opened: %+v", dev.Incidents)
 	}
 }
+
+// A kiosk without heartbeats that repeats one event past the squelch cap
+// must stay ONLINE: held events still count as signs of life.
+func TestSquelchedEventsKeepGateOnline(t *testing.T) {
+	e := newTestServer(t)
+	e.s.squelch = newSquelcher(2)
+	post := func(i int) int {
+		return e.do(http.MethodPost, "/v1/events", testToken, map[string]any{"device_id": "TST-G01", "event_id": fmt.Sprintf("ip-%d", i), "event": "READER_NOT_READY"}).Code
+	}
+	for i := 0; i < 2; i++ {
+		if c := post(i); c != http.StatusCreated {
+			t.Fatalf("event %d: HTTP %d", i, c)
+		}
+	}
+	// 30 minutes of held repeats, one per minute, no heartbeat.
+	for i := 2; i < 32; i++ {
+		e.now = e.now.Add(time.Minute)
+		if c := post(i); c != http.StatusOK {
+			t.Fatalf("event %d: HTTP %d, want 200 (held)", i, c)
+		}
+	}
+	d := e.fleet(t)["TST-G01"]
+	if d.Status != "ONLINE" {
+		t.Fatalf("status = %s after held repeats, want ONLINE", d.Status)
+	}
+	if want := e.now.UTC().Format(time.RFC3339); d.LastSeen != want {
+		t.Fatalf("last_seen = %s, want %s", d.LastSeen, want)
+	}
+}

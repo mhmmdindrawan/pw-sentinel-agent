@@ -67,7 +67,7 @@ export function mount(root, _params, ctx) {
     renderIncidents(data.incidents || []);
     if (data.unmapped_24h) {
       unmapped.replaceChildren(
-        `${nf.format(data.unmapped_24h)} event dalam 24 jam terakhir datang dari kiosk yang device_id-nya tidak cocok dengan tokennya (UNMAPPED). `,
+        `${nf.format(data.unmapped_24h)} event dalam 24 jam terakhir datang dari Cashless yang device_id-nya tidak cocok dengan tokennya (UNMAPPED). `,
         h("a", { href: "#/events?location=UNMAPPED", text: "Lihat event" }));
       unmapped.hidden = false;
     } else {
@@ -143,14 +143,14 @@ export function mount(root, _params, ctx) {
     if (agent.tailscale_ip) parts.push("agent " + agent.tailscale_ip + (agent.listen_addr ? ":" + agent.listen_addr.split(":").pop() : ""));
     else if (agent.listen_addr) parts.push("agent " + agent.listen_addr);
     if (agent.version) parts.push(fmtVersion(agent.version));
-    if (site.code && site.enroll_enabled) parts.push("pendaftaran kiosk aktif");
+    if (site.code && site.enroll_enabled) parts.push("pendaftaran Cashless aktif");
     siteLine.replaceChildren(...parts.flatMap((p, i) => (i ? [" · ", p] : [p])));
     siteLine.hidden = !parts.length;
     document.title = (site.code ? site.code + " — " : "") + "Parkways Sentinel";
 
     const warn = [];
     if (agent.db_max_bytes && agent.db_size_bytes > agent.db_max_bytes * 0.8) {
-      warn.push(`Database agent ${fmtBytes(agent.db_size_bytes)} dari batas ${fmtBytes(agent.db_max_bytes)}. Event tertua akan dibuang otomatis; periksa kiosk yang mengirim event berulang.`);
+      warn.push(`Database agent ${fmtBytes(agent.db_size_bytes)} dari batas ${fmtBytes(agent.db_max_bytes)}. Event tertua akan dibuang otomatis; periksa Cashless yang mengirim event berulang.`);
     }
     if (agent.disk_free_bytes && agent.disk_free_bytes < 1 << 30) {
       warn.push(`Sisa disk server agent hanya ${fmtBytes(agent.disk_free_bytes)}.`);
@@ -233,7 +233,7 @@ function gateCard() {
   const last = h("div", { class: "last" },
     h("div", {}, lastSev, " ", lastEvent),
     h("div", { class: "muted mono" }, lastCode, " · ", lastAgo));
-  const hint = h("div", { class: "hint", text: "Belum pernah lapor — cek SENTINEL_AGENT_URL dan SENTINEL_TOKEN di kiosk." });
+  const hint = h("div", { class: "hint", text: "Belum pernah lapor — cek SENTINEL_AGENT_URL dan SENTINEL_TOKEN di Cashless." });
 
   const el = h("a", { class: "card" },
     h("div", { class: "row" }, gate, badge),

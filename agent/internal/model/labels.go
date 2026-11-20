@@ -23,7 +23,7 @@ var eventLabels = map[string]string{
 	"DATABASE_ERROR": "Database error", "DEVICE_ERROR": "Perangkat error",
 	"GATE_OPEN_FAILED": "Palang tidak terbuka", "PCLESS_DISCONNECTED": "Palang (PCLess) terputus",
 	"PCLESS_RECOVERED": "Palang (PCLess) tersambung lagi",
-	"SYSTEM_ERROR": "Sistem error", "CLOCK_SKEW": "Jam kiosk tidak sesuai", "SENTINEL_GAP": "Kiosk sempat tidak terhubung ke Sentinel",
+	"SYSTEM_ERROR": "Sistem error", "CLOCK_SKEW": "Jam Cashless tidak sesuai", "SENTINEL_GAP": "Cashless sempat tidak terhubung ke Sentinel",
 	StatusDownEvent: "Gate mati (tidak ada kabar)",
 }
 
